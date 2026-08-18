@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model RepoScan {
+  id         Int      @id @default(autoincrement())
+  owner      String
+  repo       String
+  branch     String
+  scannedAt  DateTime @default(now())
+
+  total      Int
+  vulnerable Int
+  critical   Int
+  high       Int
+  medium     Int
+  low        Int
+
+  components String
+
+  @@unique([owner, repo])
+  @@index([owner, repo])
+}
+
+model RepoQuality {
+  id          Int      @id @default(autoincrement())
+  owner       String
+  repo        String
+  checkedAt   DateTime @default(now())
+  score       Int      // 0-100
+
+  hasCi       Boolean
+  hasTests    Boolean
+  hasLint     Boolean
+  hasFormat   Boolean
+  hasTypes    Boolean
+  hasReadme   Boolean
+  hasChangelog Boolean
+  hasEditorconfig Boolean
+
+  ciFiles     String   // JSON string[]
+  testFiles   String   // JSON string[]
+  lintFiles   String   // JSON string[]
+
+  defaultBranch String
+
+  @@unique([owner, repo])
+}
+
+model ScanHistory {
+  id         Int      @id @default(autoincrement())
+  owner      String
+  repo       String
+  scannedAt  DateTime @default(now())
+
+  total      Int
+  vulnerable Int
+  critical   Int
+  high       Int
+  medium     Int
+  low        Int
+
+  @@index([owner, repo, scannedAt])
+}
+
+model RepoAudit {
+  id          Int      @id @default(autoincrement())
+  owner       String
+  repo        String
+  checkedAt   DateTime @default(now())
+
+  // GitHub Code Scanning (CodeQL / SAST)
+  csTotal     Int @default(0)
+  csCritical  Int @default(0)
+  csHigh      Int @default(0)
+  csMedium    Int @default(0)
+  csLow       Int @default(0)
+
+  // GitHub Dependabot
+  dbTotal     Int @default(0)
+  dbCritical  Int @default(0)
+  dbHigh      Int @default(0)
+  dbMedium    Int @default(0)
+  dbLow       Int @default(0)
+
+  // GitHub Secret Scanning
+  ssTotal     Int @default(0)
+  ssActive    Int @default(0)  // unresolved secrets
+
+  alerts      String // JSON array of AuditAlert
+
+  @@unique([owner, repo])
+}
+
+model Domain {
+  id          Int       @id @default(autoincrement())
+  domain      String    @unique
+  addedAt     DateTime  @default(now())
+  checkedAt   DateTime?
+
+  // HTTP
+  httpStatus  Int?
+  httpsRedirect Boolean?
+  ipAddress   String?
+
+  // SSL
+  sslValid    Boolean?
+  sslExpiry   DateTime?
+  sslIssuer   String?
+  sslDaysLeft Int?
+
+  // Security headers
+  hasHsts     Boolean?
+  hasCsp      Boolean?
+  hasXFrame   Boolean?
+  hasXContent Boolean?
+  hasRp       Boolean?   // Referrer-Policy
+}

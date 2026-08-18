@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+.next
+.env*
+prisma/*.db
+prisma/*.db-shm
+prisma/*.db-wal
+src/generated
+README.md
+Dockerfile
+.dockerignore

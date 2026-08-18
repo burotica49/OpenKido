@@ -1,0 +1,45 @@
+appId: fr.burotica.openkido
+productName: OpenKido
+copyright: Copyright © 2026 Burotica
+
+directories:
+  output: dist/mac
+  buildResources: build
+
+# Inside app.asar: only the Electron main/preload code
+files:
+  - dist/electron/**/*
+  - package.json
+
+# The Next.js standalone server (with node_modules) is copied into
+# Contents/Resources/nextjs by scripts/after-pack.js — extraResources
+# silently excludes node_modules, so it cannot be used here.
+afterPack: scripts/after-pack.js
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+dmg:
+  title: OpenKido
+  icon: build/icon.icns
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

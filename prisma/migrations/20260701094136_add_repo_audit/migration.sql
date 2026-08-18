@@ -1,0 +1,23 @@
+-- CreateTable
+CREATE TABLE "RepoAudit" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "owner" TEXT NOT NULL,
+    "repo" TEXT NOT NULL,
+    "checkedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "csTotal" INTEGER NOT NULL DEFAULT 0,
+    "csCritical" INTEGER NOT NULL DEFAULT 0,
+    "csHigh" INTEGER NOT NULL DEFAULT 0,
+    "csMedium" INTEGER NOT NULL DEFAULT 0,
+    "csLow" INTEGER NOT NULL DEFAULT 0,
+    "dbTotal" INTEGER NOT NULL DEFAULT 0,
+    "dbCritical" INTEGER NOT NULL DEFAULT 0,
+    "dbHigh" INTEGER NOT NULL DEFAULT 0,
+    "dbMedium" INTEGER NOT NULL DEFAULT 0,
+    "dbLow" INTEGER NOT NULL DEFAULT 0,
+    "ssTotal" INTEGER NOT NULL DEFAULT 0,
+    "ssActive" INTEGER NOT NULL DEFAULT 0,
+    "alerts" TEXT NOT NULL
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "RepoAudit_owner_repo_key" ON "RepoAudit"("owner", "repo");
