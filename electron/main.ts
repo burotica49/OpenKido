@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import http from "http";
 import net from "net";
+import { randomUUID } from "crypto";
 import { pathToFileURL } from "url";
 
 const DEV = !app.isPackaged;
@@ -116,19 +117,28 @@ function loadEnvFile(file: string) {
   }
 }
 
+/**
+ * Vrai si le port est libre sur TOUTES les interfaces. Tester seulement 127.0.0.1 ne suffit pas : sous macOS,
+ * une autre application à l'écoute sur « * » ou sur [::] n'empêche pas de se lier à 127.0.0.1, et la page
+ * « localhost » finirait par afficher cette autre application.
+ */
 function portAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once("error", () => resolve(false));
-    server.once("listening", () => {
-      server.close(() => resolve(true));
+  const tryBind = (host: string) =>
+    new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once("error", (err: NodeJS.ErrnoException) => resolve(err.code === "EAFNOSUPPORT" || err.code === "EADDRNOTAVAIL"));
+      server.once("listening", () => server.close(() => resolve(true)));
+      server.listen({ port, host, exclusive: true });
     });
-    server.listen(port, "127.0.0.1");
-  });
+  // [::1] aussi : « localhost » peut pointer vers IPv6, une autre application y serait servie à la place de la nôtre.
+  return Promise.all([tryBind("0.0.0.0"), tryBind("::"), tryBind("127.0.0.1"), tryBind("::1")]).then((r) => r.every(Boolean));
 }
 
 async function pickPort(): Promise<number> {
-  if (await portAvailable(PREFERRED_PORT)) return PREFERRED_PORT;
+  for (let port = PREFERRED_PORT; port < PREFERRED_PORT + 20; port++) {
+    if (await portAvailable(port)) return port;
+  }
+  // Plage occupée : port libre quelconque attribué par le système.
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", reject);
@@ -140,25 +150,72 @@ async function pickPort(): Promise<number> {
   });
 }
 
+// ─── Journal du serveur local ─────────────────────────────────────────────────
+
+const LOG_TAIL_LINES = 40;
+const serverLogTail: string[] = [];
+let serverLogStream: fs.WriteStream | null = null;
+let serverLogPath = "";
+let serverExit: { code: number | null } | null = null;
+
+function openServerLog() {
+  try {
+    const dir = app.getPath("logs");
+    fs.mkdirSync(dir, { recursive: true });
+    serverLogPath = path.join(dir, "server.log");
+    serverLogStream = fs.createWriteStream(serverLogPath, { flags: "w", mode: 0o600 });
+  } catch (err) {
+    console.warn("[electron] journal du serveur indisponible :", err);
+  }
+}
+
+function recordServerOutput(chunk: Buffer, to: NodeJS.WriteStream) {
+  to.write(chunk);
+  serverLogStream?.write(chunk);
+  for (const line of chunk.toString("utf8").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    serverLogTail.push(line.slice(0, 300));
+    if (serverLogTail.length > LOG_TAIL_LINES) serverLogTail.shift();
+  }
+}
+
 // ─── Wait for Next.js ─────────────────────────────────────────────────────────
 
-function waitForServer(url: string, timeout = 60_000): Promise<void> {
+/** Interroge /api/health jusqu'à obtenir la réponse de NOTRE serveur ; échoue tôt si le processus s'arrête. */
+function waitForServer(port: number, instance: string, timeout = 90_000): Promise<void> {
   const start = Date.now();
+  let lastProblem = "aucune réponse";
   return new Promise((resolve, reject) => {
+    function fail(reason: string) {
+      const tail = serverLogTail.slice(-12).join("\n");
+      const hints: string[] = [];
+      if (process.arch === "x64" && (app as { runningUnderARM64Translation?: boolean }).runningUnderARM64Translation) {
+        hints.push("Cette version Intel (x64) tourne sous Rosetta sur un Mac Apple Silicon : installez la version arm64.");
+      }
+      reject(new Error(`${reason} (port ${port})${hints.length ? `\n\n${hints.join("\n")}` : ""}${tail ? `\n\nDernières lignes du serveur :\n${tail}` : ""}${serverLogPath ? `\n\nJournal complet : ${serverLogPath}` : ""}`));
+    }
     function attempt() {
-      http
-        .get(url, (res) => {
-          if (res.statusCode && res.statusCode < 500) resolve();
-          else retry();
-        })
-        .on("error", retry);
+      if (serverExit) return fail(`Le serveur s'est arrêté (code ${serverExit.code})`);
+      const req = http.get({ host: "127.0.0.1", port, path: "/api/health", timeout: 3000 }, (res) => {
+        let body = "";
+        res.on("data", (c: Buffer) => { if (body.length < 2000) body += c.toString("utf8"); });
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(body) as { ok?: boolean; instance?: string };
+            if (res.statusCode === 200 && json.ok && json.instance === instance) return resolve();
+            lastProblem = res.statusCode === 200 ? "le port répond mais ce n'est pas le serveur OpenKido (autre application ?)" : `santé du serveur : HTTP ${res.statusCode}`;
+          } catch {
+            lastProblem = `réponse inattendue (HTTP ${res.statusCode}) : le port est peut-être utilisé par une autre application`;
+          }
+          retry();
+        });
+      });
+      req.on("timeout", () => req.destroy());
+      req.on("error", () => { lastProblem = "le serveur ne répond pas"; retry(); });
     }
     function retry() {
-      if (Date.now() - start > timeout) {
-        reject(new Error("Next.js server did not start in time"));
-      } else {
-        setTimeout(attempt, 500);
-      }
+      if (Date.now() - start > timeout) fail(`Le serveur n'a pas démarré à temps : ${lastProblem}`);
+      else setTimeout(attempt, 400);
     }
     attempt();
   });
@@ -166,8 +223,8 @@ function waitForServer(url: string, timeout = 60_000): Promise<void> {
 
 // ─── Start bundled Next.js server ─────────────────────────────────────────────
 
-async function startNextServer(): Promise<void> {
-  if (DEV) return;
+async function startNextServer(): Promise<{ port: number; instance: string } | null> {
+  if (DEV) return null;
 
   const base = path.join(process.resourcesPath, "nextjs");
   const serverJs = path.join(base, "server.js");
@@ -192,7 +249,10 @@ async function startNextServer(): Promise<void> {
   }
 
   const port = await pickPort();
+  const instance = randomUUID();
   appOrigin = `http://localhost:${port}`;
+  openServerLog();
+  if (port !== PREFERRED_PORT) console.log(`[electron] port ${PREFERRED_PORT} occupé, utilisation du port ${port}`);
 
   const env = {
     ...process.env,
@@ -204,16 +264,19 @@ async function startNextServer(): Promise<void> {
     NEXTAUTH_URL: appOrigin,
     AUTH_TRUST_HOST: "true",
     OPENKIDO_DESKTOP: "1",
+    OPENKIDO_INSTANCE: instance,
   };
 
   nextServer = utilityProcess.fork(serverJs, [], { env, stdio: "pipe", cwd: base });
 
-  nextServer.stdout?.on("data", (d: Buffer) => process.stdout.write(d));
-  nextServer.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
+  nextServer.stdout?.on("data", (d: Buffer) => recordServerOutput(d, process.stdout));
+  nextServer.stderr?.on("data", (d: Buffer) => recordServerOutput(d, process.stderr));
 
   nextServer.on("exit", (code) => {
+    serverExit = { code };
     console.log(`[electron] Next.js server exited with code ${code}`);
   });
+  return { port, instance };
 }
 
 // ─── Create window ────────────────────────────────────────────────────────────
@@ -284,13 +347,13 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionCheckHandler(() => false);
 
   try {
-    await startNextServer();
-    if (!DEV) await waitForServer(appOrigin);
+    const started = await startNextServer();
+    if (started) await waitForServer(started.port, started.instance);
     createWindow();
   } catch (err) {
     dialog.showErrorBox(
       "Erreur au démarrage",
-      `Impossible de démarrer le serveur.\n\n${err}`
+      `Impossible de démarrer le serveur.\n\n${err instanceof Error ? err.message : err}`
     );
     app.quit();
   }

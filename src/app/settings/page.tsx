@@ -68,6 +68,12 @@ export default async function SettingsPage() {
           <p className="text-[11px] font-mono text-muted-foreground break-all">
             Base : {dbLabel}
           </p>
+          {process.env.OPENKIDO_DESKTOP === "1" && process.env.PORT && (
+            <p className="text-xs text-muted-foreground" title="Port du serveur local de l'application de bureau. Si le port 3000 est déjà pris par une autre application, le suivant est utilisé automatiquement.">
+              Serveur local : port <span className="font-mono font-medium text-foreground">{process.env.PORT}</span>
+              {process.env.PORT !== "3000" && " (le port 3000 était occupé)"}
+            </p>
+          )}
         </div>
 
         <SignOutButton className={buttonVariants({ variant: "outline", size: "sm" })}>

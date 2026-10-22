@@ -47,3 +47,4 @@ yarn-error.log*
 *.db-journal
 *.db-shm
 *.db-wal
+build/native-cache/
