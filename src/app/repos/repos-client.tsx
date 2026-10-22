@@ -8,17 +8,17 @@ import {
   IconSearch, IconFilter, IconLock, IconExternalLink,
   IconRefresh, IconLoader2, IconShieldCheck, IconBrandGithub,
   IconGitPullRequest, IconCircleCheck, IconCircleX,
-  IconAlertTriangle, IconPlayerPlay, IconSettings,
+  IconAlertTriangle, IconPlayerPlay, IconSettings, IconX,
 } from "@tabler/icons-react";
 import type { GithubRepo, GithubPR } from "@/lib/github";
 import type { RepoScanSummary, TrendPoint } from "@/lib/scan";
-import { triggerScan, scanAllRepos } from "@/lib/scan";
+import { triggerScan, scanAllRepos } from "@/lib/actions/scan";
 import { TrendChart } from "@/components/app/trend-chart";
 import { Input } from "@/components/ui/input";
+import { HelpPanel, Term } from "@/components/app/help-panel";
 import { TopBar, PageHeader } from "@/components/app/sidebar";
 import { SevRow } from "@/components/app/severity-badge";
 import { cn } from "@/lib/utils";
-import { useSession } from "next-auth/react";
 
 const LANG_COLORS: Record<string, string> = {
   JavaScript: "#f1e05a", TypeScript: "#3178c6", Python: "#3572A5",
@@ -41,12 +41,27 @@ function timeAgo(dateStr: string): string {
   return `il y a ${Math.floor(m / 12)} an${Math.floor(m / 12) > 1 ? "s" : ""}`;
 }
 
-function ScanButton({ repo, token }: { repo: GithubRepo; token: string }) {
+interface Notice {
+  kind: "error" | "warning";
+  text: string;
+}
+
+function ScanButton({ repo, onNotice }: { repo: GithubRepo; onNotice: (n: Notice | null) => void }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   function handleScan() {
     startTransition(async () => {
-      await triggerScan(token, repo.owner, repo.name, repo.default_branch ?? "main");
+      const r = await triggerScan(repo.owner, repo.name);
+      if (!r.ok) {
+        onNotice({ kind: "error", text: `${repo.full_name} : ${r.error}` });
+      } else if (r.status === "partial") {
+        onNotice({
+          kind: "warning",
+          text: `${repo.full_name} : scan incomplet — ${r.warnings.join(" ; ")}${r.persisted ? "" : " (le dernier scan complet est conservé)"}`,
+        });
+      } else {
+        onNotice(null);
+      }
       router.refresh();
     });
   }
@@ -60,12 +75,12 @@ function ScanButton({ repo, token }: { repo: GithubRepo; token: string }) {
 }
 
 // ─── Tab Repositories ───────────────────────────────────────────────
-function ReposTab({ repos, summaries, token, query, setQuery }: {
+function ReposTab({ repos, summaries, query, setQuery, onNotice }: {
   repos: GithubRepo[];
   summaries: Record<string, RepoScanSummary>;
-  token: string;
   query: string;
   setQuery: (q: string) => void;
+  onNotice: (n: Notice | null) => void;
 }) {
   const filtered = useMemo(() =>
     repos.filter((r) => r.full_name.toLowerCase().includes(query.toLowerCase())),
@@ -126,18 +141,28 @@ function ReposTab({ repos, summaries, token, query, setQuery }: {
                     : <span className="text-muted-foreground">—</span>}
                 </td>
                 <td className="px-4 py-3">
-                  {summary
-                    ? summary.total === 0
-                      ? <span className="text-[12px] text-muted-foreground">Aucune dépendance</span>
-                      : summary.vulnerable === 0
-                        ? <span className="inline-flex items-center gap-1 text-[12px] text-green-600 font-medium"><IconShieldCheck size={13} />Sain ({summary.total})</span>
-                        : <SevRow critical={summary.critical} high={summary.high} medium={summary.medium} low={summary.low} />
-                    : <span className="text-[12px] text-muted-foreground italic">Pas encore scanné</span>}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {summary
+                      ? summary.total === 0
+                        ? <span className="text-[12px] text-muted-foreground">Aucune dépendance</span>
+                        : summary.vulnerable === 0
+                          ? summary.status === "partial"
+                            ? <span className="text-[12px] text-muted-foreground">Indéterminé</span>
+                            : <span className="inline-flex items-center gap-1 text-[12px] text-green-600 font-medium"><IconShieldCheck size={13} />Sain ({summary.total})</span>
+                          : <SevRow critical={summary.critical} high={summary.high} medium={summary.medium} low={summary.low} />
+                      : <span className="text-[12px] text-muted-foreground italic">Pas encore scanné</span>}
+                    {summary?.status === "partial" && (
+                      <span title={summary.note ?? "Scan incomplet"}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                        <IconAlertTriangle size={10} />Incomplet
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3 text-[12px] text-muted-foreground">{lastScan ?? <span className="italic">—</span>}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {token && <ScanButton repo={repo} token={token} />}
+                    <ScanButton repo={repo} onNotice={onNotice} />
                     <Link href={`/repos/${repo.owner}/${repo.name}`}
                       className="inline-flex items-center gap-1 rounded px-2.5 py-1 text-[12px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors border border-border">
                       <IconPlayerPlay size={12} /> Détail
@@ -266,12 +291,14 @@ function ChecksTab({ repos, summaries }: {
   repos: GithubRepo[];
   summaries: Record<string, RepoScanSummary>;
 }) {
-  type CheckStatus = "critical" | "warning" | "ok" | "pending";
+  type CheckStatus = "critical" | "warning" | "partial" | "ok" | "pending";
 
   function checkStatus(summary?: RepoScanSummary): CheckStatus {
     if (!summary) return "pending";
     if (summary.critical > 0) return "critical";
     if (summary.high > 0 || summary.medium > 0) return "warning";
+    // Un scan partiel sans vulnérabilité trouvée ne prouve rien : jamais « sain ».
+    if (summary.status === "partial") return "partial";
     return "ok";
   }
 
@@ -286,6 +313,11 @@ function ChecksTab({ repos, summaries }: {
       label: "Avertissement",
       className: "text-amber-500",
     },
+    partial: {
+      icon: <IconAlertTriangle size={15} />,
+      label: "Incomplet",
+      className: "text-amber-600",
+    },
     ok: {
       icon: <IconCircleCheck size={15} />,
       label: "Sain",
@@ -299,19 +331,19 @@ function ChecksTab({ repos, summaries }: {
   };
 
   const sorted = [...repos].sort((a, b) => {
-    const order: CheckStatus[] = ["critical", "warning", "pending", "ok"];
+    const order: CheckStatus[] = ["critical", "warning", "partial", "pending", "ok"];
     return order.indexOf(checkStatus(summaries[`${a.owner}/${a.name}`])) -
            order.indexOf(checkStatus(summaries[`${b.owner}/${b.name}`]));
   });
 
-  const counts = { critical: 0, warning: 0, ok: 0, pending: 0 };
+  const counts = { critical: 0, warning: 0, partial: 0, ok: 0, pending: 0 };
   for (const r of repos) counts[checkStatus(summaries[`${r.owner}/${r.name}`])]++;
 
   return (
     <div className="flex-1 bg-white">
       {/* Summary bar */}
       <div className="flex items-center gap-6 px-6 py-3 border-b border-border bg-muted/20">
-        {(["critical", "warning", "ok", "pending"] as CheckStatus[]).map((s) => (
+        {(["critical", "warning", "partial", "ok", "pending"] as CheckStatus[]).map((s) => (
           <div key={s} className={cn("flex items-center gap-1.5 text-[13px]", STATUS_CONFIG[s].className)}>
             {STATUS_CONFIG[s].icon}
             <span className="font-medium tabular-nums">{counts[s]}</span>
@@ -395,29 +427,46 @@ export function ReposClient({
   summaries: Record<string, RepoScanSummary>;
   trend: TrendPoint[];
 }) {
-  const { data: session } = useSession();
-  const token = session?.accessToken ?? "";
   const router = useRouter();
 
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<Tab>("repos");
   const [scanningAll, setScanningAll] = useState(false);
   const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
   async function handleScanAll() {
-    if (!token || scanningAll) return;
+    if (scanningAll) return;
     setScanningAll(true);
+    setNotice(null);
     setScanProgress({ done: 0, total: repos.length });
     const BATCH = 5;
     let done = 0;
+    const agg = { complete: 0, partial: 0, failed: 0, failures: [] as { repo: string; error: string }[] };
     for (let i = 0; i < repos.length; i += BATCH) {
       const batch = repos.slice(i, i + BATCH);
-      await scanAllRepos(token, batch.map((r) => ({ owner: r.owner, name: r.name, branch: r.default_branch ?? "main" })));
+      try {
+        const r = await scanAllRepos(batch.map((x) => ({ owner: x.owner, name: x.name })));
+        agg.complete += r.done;
+        agg.partial += r.partial;
+        agg.failed += r.failed;
+        agg.failures.push(...r.failures);
+      } catch (error) {
+        agg.failed += batch.length;
+        agg.failures.push({ repo: `${batch.length} dépôt(s)`, error: error instanceof Error ? error.message : "erreur inconnue" });
+      }
       done += batch.length;
       setScanProgress({ done: Math.min(done, repos.length), total: repos.length });
     }
     setScanningAll(false);
     setScanProgress(null);
+    if (agg.failed + agg.partial > 0) {
+      const detail = agg.failures.slice(0, 3).map((f) => `${f.repo} (${f.error})`).join(" ; ");
+      setNotice({
+        kind: agg.failed > 0 ? "error" : "warning",
+        text: `${agg.complete} scan(s) complet(s), ${agg.partial} incomplet(s), ${agg.failed} en échec${detail ? ` — ${detail}` : ""}`,
+      });
+    }
     router.refresh();
   }
 
@@ -440,13 +489,21 @@ export function ReposClient({
               <IconShieldCheck size={12} />{scannedCount} scannés
             </span>
           )}
-          <button onClick={handleScanAll} disabled={scanningAll || !token}
+          <button onClick={handleScanAll} disabled={scanningAll}
             className="inline-flex items-center gap-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 text-[13px] font-medium transition-colors disabled:opacity-60">
             {scanningAll ? <IconLoader2 size={14} className="animate-spin" /> : <IconRefresh size={14} />}
             {scanningAll ? `Scan… ${scanProgress?.done ?? 0}/${scanProgress?.total ?? repos.length}` : "Tout scanner"}
           </button>
         </div>
       </PageHeader>
+
+      <HelpPanel>
+        <p>Cette page liste vos dépôts GitHub et analyse les <Term>dépendances</Term> qu&apos;ils utilisent (les bibliothèques tierces) pour y chercher des <Term>vulnérabilités connues</Term>, grâce à la base publique OSV.dev. Elle ne lit pas votre code et ne modifie rien.</p>
+        <p><Term>Scanner</Term> : récupère la liste des bibliothèques et de leurs versions exactes (via les fichiers lockfile quand ils existent), puis la compare à la base de failles connues.</p>
+        <p><Term>Niveaux de risque</Term> : <Term>Critique</Term> et <Term>élevée</Term> = faille facile à exploiter ou aux conséquences graves, à mettre à jour vite ; <Term>moyenne</Term> et <Term>faible</Term> = à planifier. <Term>Sain</Term> = aucune faille connue dans les dépendances analysées.</p>
+        <p>Le scan repère aussi les <Term>paquets malveillants</Term> (signalés comme tels dans OSV.dev) et relève la <Term>licence</Term> de chaque dépendance de production (via deps.dev) : les licences à risque (GPL, AGPL, absence de licence…) apparaissent dans la page Issues.</p>
+        <p>Si un scan est <Term>partiel</Term>, une partie des dépendances n&apos;a pas pu être vérifiée : le résultat n&apos;est alors pas une garantie. L&apos;onglet <Term>Checks</Term> montre l&apos;évolution dans le temps ; les pull requests ouvertes sont dans leur onglet.</p>
+      </HelpPanel>
 
       {/* Progress bar */}
       {scanningAll && scanProgress && (
@@ -460,6 +517,14 @@ export function ReposClient({
               {scanProgress.done} / {scanProgress.total}
             </span>
           </div>
+        </div>
+      )}
+
+      {notice && (
+        <div className={cn("flex items-start justify-between gap-3 px-6 py-2.5 text-[12px] border-b",
+          notice.kind === "error" ? "bg-red-50 text-red-800 border-red-200" : "bg-amber-50 text-amber-800 border-amber-200")}>
+          <span className="flex items-start gap-2"><IconAlertTriangle size={14} className="mt-0.5 shrink-0" />{notice.text}</span>
+          <button onClick={() => setNotice(null)} aria-label="Fermer" className="shrink-0 opacity-70 hover:opacity-100"><IconX size={14} /></button>
         </div>
       )}
 
@@ -482,11 +547,13 @@ export function ReposClient({
         </div>
       </div>
 
-      {tab === "repos" && <ReposTab repos={repos} summaries={summaries} token={token} query={query} setQuery={setQuery} />}
+      {tab === "repos" && <ReposTab repos={repos} summaries={summaries} query={query} setQuery={setQuery} onNotice={setNotice} />}
       {tab === "pullrequests" && <PullRequestsTab pullRequests={pullRequests} query={query} setQuery={setQuery} />}
       {tab === "checks" && (
         <div className="flex-1 bg-white">
-          <TrendChart points={trend} />
+          <div className="border-b border-border">
+            <TrendChart points={trend} />
+          </div>
           <ChecksTab repos={repos} summaries={summaries} />
         </div>
       )}

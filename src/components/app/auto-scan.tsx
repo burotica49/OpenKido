@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
 import { IconLoader2, IconShieldCheck } from "@tabler/icons-react";
-import { scanAllRepos } from "@/lib/scan";
+import { scanAllRepos } from "@/lib/actions/scan";
 
 const FLAG = "ok_autoscan_done";
 const REFRESH_INTERVAL_H = 6; // rescan périodique tant que l'app reste ouverte
@@ -14,13 +13,11 @@ export function AutoScan({
 }: {
   staleRepos: { owner: string; name: string; branch: string }[];
 }) {
-  const { data: session } = useSession();
-  const token = session?.accessToken ?? "";
   const router = useRouter();
   const [state, setState] = useState<"idle" | "scanning" | "done">("idle");
 
   useEffect(() => {
-    if (!token || staleRepos.length === 0) return;
+    if (staleRepos.length === 0) return;
     // Une seule exécution par session de navigation (survit au StrictMode et aux navigations)
     if (sessionStorage.getItem(FLAG)) return;
     sessionStorage.setItem(FLAG, "1");
@@ -33,7 +30,7 @@ export function AutoScan({
         const BATCH = 5;
         for (let i = 0; i < staleRepos.length && !cancelled; i += BATCH) {
           const batch = staleRepos.slice(i, i + BATCH);
-          await scanAllRepos(token, batch);
+          await scanAllRepos(batch);
         }
       } finally {
         if (!cancelled) {
@@ -56,7 +53,7 @@ export function AutoScan({
       clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [staleRepos.length]);
 
   if (state === "idle") return null;
 

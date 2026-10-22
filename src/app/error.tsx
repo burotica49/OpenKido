@@ -4,12 +4,14 @@ import { signOut } from "next-auth/react";
 import { IconAlertTriangle, IconBrandGithub, IconRefresh } from "@tabler/icons-react";
 import { TopBar } from "@/components/app/sidebar";
 import { Button } from "@/components/ui/button";
+import { revokeGithubSession } from "@/lib/logout";
 
 export default function Error({
-  unstable_retry,
+  error,
+  retry,
 }: {
   error: Error & { digest?: string };
-  unstable_retry: () => void;
+  retry: () => void;
 }) {
   return (
     <div className="flex flex-col flex-1 bg-background">
@@ -23,13 +25,23 @@ export default function Error({
           <p className="max-w-md text-sm text-muted-foreground">
             Votre session GitHub a peut-être expiré, ou l’API est indisponible.
           </p>
+          {error.digest && (
+            <p className="text-[11px] text-muted-foreground font-mono pt-1">Réf. {error.digest}</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => unstable_retry()}>
+          <Button variant="outline" onClick={() => retry()}>
             <IconRefresh />
             Réessayer
           </Button>
-          <Button onClick={() => signOut({ redirectTo: "/" })}>
+          <Button
+            onClick={async () => {
+              try {
+                await revokeGithubSession();
+              } catch {}
+              await signOut({ redirectTo: "/" });
+            }}
+          >
             <IconBrandGithub />
             Se reconnecter
           </Button>

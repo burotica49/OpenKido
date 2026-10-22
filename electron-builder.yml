@@ -6,10 +6,13 @@ directories:
   output: dist/mac
   buildResources: build
 
-# Inside app.asar: only the Electron main/preload code
+# Inside app.asar: only the Electron main/preload code.
+# node_modules is explicitly excluded — the Next.js server in
+# Resources/nextjs carries its own, and the Electron main needs none.
 files:
   - dist/electron/**/*
   - package.json
+  - "!node_modules/**/*"
 
 # The Next.js standalone server (with node_modules) is copied into
 # Contents/Resources/nextjs by scripts/after-pack.js — extraResources

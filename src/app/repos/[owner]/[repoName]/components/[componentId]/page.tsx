@@ -1,8 +1,6 @@
-import { redirect, notFound } from "next/navigation";
+import { notFound } from "next/navigation";
 import Link from "next/link";
-import { auth } from "@/lib/auth";
-import { getOctokit } from "@/lib/github";
-import { scanRepo } from "@/lib/scan";
+import { loadRepoScan } from "@/lib/repo-page";
 import { SeverityBadge } from "@/components/app/risk-badge";
 import { buttonVariants } from "@/components/ui/button";
 import { IconArrowLeft, IconArrowUpCircle, IconExternalLink, IconPackage } from "@tabler/icons-react";
@@ -15,26 +13,26 @@ export default async function ComponentDetailPage({
   params: Promise<{ owner: string; repoName: string; componentId: string }>;
 }) {
   const { owner, repoName, componentId } = await params;
-  const session = await auth();
-  if (!session?.accessToken) redirect("/");
-
-  const octokit = getOctokit(session.accessToken);
-  let branch = "main";
+  let name = componentId;
   try {
-    const { data } = await octokit.repos.get({ owner, repo: repoName });
-    branch = data.default_branch;
-  } catch {}
+    name = decodeURIComponent(componentId);
+  } catch {
+    // identifiant déjà décodé
+  }
 
-  const scan = await scanRepo(session.accessToken, owner, repoName, branch);
-  const component = scan.components.find((c) => c.name === componentId);
-  if (!component) notFound();
+  const { scan } = await loadRepoScan(owner, repoName);
+  // Un même paquet peut être présent en plusieurs versions (dépendances transitives).
+  const versions = (scan?.components ?? []).filter((c) => c.name === name);
+  if (!scan || versions.length === 0) notFound();
+  const component = versions[0];
 
-  const topFixed = component.vulns
+  const topFixed = versions
+    .flatMap((c) => c.vulns)
     .filter((v) => v.fixedVersion)
     .sort((a, b) => (b.cvssScore ?? 0) - (a.cvssScore ?? 0))[0]?.fixedVersion;
 
   return (
-    <div className="px-6 py-5 max-w-3xl">
+    <div className="px-6 py-5">
       <Link
         href={`/repos/${owner}/${repoName}/inventory`}
         className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors mb-5"
@@ -51,7 +49,8 @@ export default async function ComponentDetailPage({
           <div>
             <h2 className="text-base font-semibold font-mono">{component.name}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {component.ecosystem} · v{component.version}
+              {component.ecosystem}
+              {versions.length > 1 ? ` · ${versions.length} versions présentes` : ` · v${component.version}`}
               {component.source ? ` · ${component.source}` : ""}
             </p>
           </div>
@@ -64,8 +63,17 @@ export default async function ComponentDetailPage({
         )}
       </div>
 
-      <div className="space-y-3">
-        {component.vulns.map((v) => (
+      {versions.map((c) => (
+        <section key={`${c.version}:${c.source ?? ""}`} className="mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-mono text-[13px] font-medium">v{c.version}</span>
+            {c.direct === true && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">direct</span>}
+            {c.direct === false && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">transitif</span>}
+            {c.scope === "dev" && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">dev</span>}
+            {!c.resolved && <span title="Plage déclarée : version installée inconnue" className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">plage</span>}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {c.vulns.map((v) => (
           <div key={v.id} className="rounded-xl border border-border bg-card overflow-hidden">
             <div className="flex items-start gap-3 px-4 py-3 border-b border-border">
               <SeverityBadge severity={v.severity} />
@@ -96,20 +104,27 @@ export default async function ComponentDetailPage({
               </div>
             </div>
           </div>
-        ))}
-      </div>
-
-      {component.vulns.length === 0 && (
-        <div className="rounded-xl border border-border bg-card px-5 py-8 text-center">
-          <p className="text-sm text-muted-foreground">Aucune vulnérabilité connue pour ce composant.</p>
-        </div>
-      )}
+            ))}
+          </div>
+          {c.vulns.length === 0 && (
+            <div className="rounded-xl border border-border bg-card px-5 py-6 text-center">
+              <p className="text-sm text-muted-foreground">
+                {c.status === "non-analysé" ? "Composant non analysé (OSV injoignable lors du scan)." : "Aucune vulnérabilité connue pour cette version."}
+              </p>
+            </div>
+          )}
+        </section>
+      ))}
 
       {topFixed && (
         <div className="flex items-center gap-2 mt-5">
-          <button className={buttonVariants({ size: "sm" })}>
+          <button
+            disabled
+            title="Bientôt disponible : ouverture automatique d'une PR de mise à jour"
+            className={`${buttonVariants({ size: "sm" })} opacity-60 cursor-not-allowed`}
+          >
             <IconArrowUpCircle size={15} className="mr-1.5" />
-            Créer une PR de mise à jour → {topFixed}
+            Mettre à jour → {topFixed}
           </button>
           <Link href={`/repos/${owner}/${repoName}/inventory`} className={buttonVariants({ variant: "outline", size: "sm" })}>
             Retour

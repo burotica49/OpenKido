@@ -7,15 +7,16 @@ import {
   IconRefresh, IconLoader2, IconCheck, IconX,
   IconGitBranch, IconTestPipe, IconBraces,
   IconFileText, IconSparkles, IconChartBar,
-  IconCode,
+  IconCode, IconAlertTriangle,
 } from "@tabler/icons-react";
 import type { GithubRepo } from "@/lib/github";
 import type { RepoQualityModel } from "@/generated/prisma/models/RepoQuality";
-import { analyzeRepo, analyzeAllRepos } from "@/lib/quality";
+import { analyzeRepo, analyzeAllRepos } from "@/lib/actions/quality";
+import { HelpPanel, Term } from "@/components/app/help-panel";
+import { DetailDrawer, DrawerSection } from "@/components/app/detail-drawer";
 import { TopBar, PageHeader } from "@/components/app/sidebar";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useSession } from "next-auth/react";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -61,11 +62,20 @@ const CHECKS: { key: keyof RepoQualityModel; label: string; weight: number; icon
 
 // ─── Bouton analyse individuelle ─────────────────────────────────────
 
-function AnalyzeButton({ repo, token }: { repo: GithubRepo; token: string }) {
+interface Notice { kind: "error"; text: string }
+
+function AnalyzeButton({ repo, onNotice }: { repo: GithubRepo; onNotice: (n: Notice | null) => void }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   return (
-    <button onClick={(e) => { e.stopPropagation(); start(async () => { await analyzeRepo(token, repo.owner, repo.name, repo.default_branch); router.refresh(); }); }}
+    <button onClick={(e) => {
+      e.stopPropagation();
+      start(async () => {
+        const r = await analyzeRepo(repo.owner, repo.name);
+        onNotice(r.ok ? null : { kind: "error", text: `${repo.full_name} : ${r.error}` });
+        router.refresh();
+      });
+    }}
       disabled={pending}
       className="inline-flex items-center gap-1 rounded px-2.5 py-1 text-[12px] text-violet-600 hover:bg-violet-50 border border-violet-200 transition-colors disabled:opacity-50">
       {pending ? <IconLoader2 size={12} className="animate-spin" /> : <IconRefresh size={12} />}
@@ -83,29 +93,40 @@ export function CodeQualityClient({
   repos: GithubRepo[];
   summaries: Record<string, RepoQualityModel>;
 }) {
-  const { data: session } = useSession();
-  const token = session?.accessToken ?? "";
   const router = useRouter();
 
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<"score" | "name" | "recent">("score");
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
 
   async function handleAnalyzeAll() {
-    if (!token || scanning) return;
+    if (scanning) return;
     setScanning(true);
+    setNotice(null);
     setProgress({ done: 0, total: repos.length });
     const BATCH = 3;
     let done = 0;
+    let failed = 0;
+    const failures: { repo: string; error: string }[] = [];
     for (let i = 0; i < repos.length; i += BATCH) {
       const batch = repos.slice(i, i + BATCH);
-      await analyzeAllRepos(token, batch.map((r) => ({ owner: r.owner, name: r.name, branch: r.default_branch })));
+      try {
+        const r = await analyzeAllRepos(batch.map((x) => ({ owner: x.owner, name: x.name })));
+        failed += r.failed;
+        failures.push(...r.failures);
+      } catch (error) {
+        failed += batch.length;
+        failures.push({ repo: `${batch.length} dépôt(s)`, error: error instanceof Error ? error.message : "erreur inconnue" });
+      }
       done += batch.length;
       setProgress({ done: Math.min(done, repos.length), total: repos.length });
     }
     setScanning(false);
     setProgress(null);
+    if (failed > 0) setNotice({ kind: "error", text: `${failed} analyse(s) en échec — ${failures.slice(0, 3).map((f) => `${f.repo} (${f.error})`).join(" ; ")}` });
     router.refresh();
   }
 
@@ -142,13 +163,27 @@ export function CodeQualityClient({
               Score moyen : {avgScore} / 100
             </span>
           )}
-          <button onClick={handleAnalyzeAll} disabled={scanning || !token}
+          <button onClick={handleAnalyzeAll} disabled={scanning}
             className="inline-flex items-center gap-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 text-[13px] font-medium transition-colors disabled:opacity-60">
             {scanning ? <IconLoader2 size={14} className="animate-spin" /> : <IconRefresh size={14} />}
             {scanning ? `Analyse… ${progress?.done ?? 0}/${progress?.total ?? repos.length}` : "Tout analyser"}
           </button>
         </div>
       </PageHeader>
+
+      <HelpPanel>
+        <p>Cette page vérifie si vos dépôts suivent les bonnes pratiques de développement, qui rendent un projet plus fiable et plus facile à maintenir. Elle examine les fichiers du dépôt, sans rien modifier.</p>
+        <p><Term>Score</Term> : de 0 à 100. Chaque pratique présente rapporte des points selon son importance : CI/CD (25), tests (25), linting (15), formatage (10), TypeScript (10), README (10), changelog (3), EditorConfig (2).</p>
+        <p><Term>CI/CD</Term> : exécution automatique des vérifications à chaque changement. <Term>Tests</Term> : code qui contrôle que le logiciel fonctionne. <Term>Linting</Term> : outil qui repère les erreurs de style ou de logique. <Term>Formatage</Term> : mise en forme uniforme du code.</p>
+        <p>Les pastilles « n/N » au-dessus du tableau indiquent, pour chaque pratique, combien de dépôts la respectent.</p>
+      </HelpPanel>
+
+      {notice && (
+        <div className="flex items-start justify-between gap-3 px-6 py-2.5 text-[12px] border-b bg-red-50 text-red-800 border-red-200">
+          <span className="flex items-start gap-2"><IconAlertTriangle size={14} className="mt-0.5 shrink-0" />{notice.text}</span>
+          <button onClick={() => setNotice(null)} aria-label="Fermer" className="shrink-0 opacity-70 hover:opacity-100"><IconX size={14} /></button>
+        </div>
+      )}
 
       {/* Progress bar */}
       {scanning && progress && (
@@ -224,7 +259,11 @@ export function CodeQualityClient({
                 : null;
 
               return (
-                <tr key={repo.id} className="hover:bg-muted/20 transition-colors group">
+                <tr
+                  key={repo.id}
+                  onClick={() => q && setOpenKey(openKey === key ? null : key)}
+                  className={cn("hover:bg-muted/20 transition-colors group border-l-2", q && "cursor-pointer", openKey === key ? "border-l-violet-600 bg-violet-50/40" : "border-l-transparent")}
+                >
                   {/* Score */}
                   <td className="px-6 py-3 w-28">
                     {q ? (
@@ -244,7 +283,7 @@ export function CodeQualityClient({
 
                   {/* Repo */}
                   <td className="px-4 py-3">
-                    <Link href={`/repos/${repo.owner}/${repo.name}`}
+                    <Link href={`/repos/${repo.owner}/${repo.name}`} onClick={(e) => e.stopPropagation()}
                       className="font-medium hover:text-violet-600 transition-colors">
                       {repo.name}
                     </Link>
@@ -270,8 +309,8 @@ export function CodeQualityClient({
 
                   {/* Actions */}
                   <td className="px-4 py-3">
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                      {token && <AnalyzeButton repo={repo} token={token} />}
+                    <div onClick={(e) => e.stopPropagation()} className="opacity-0 group-hover:opacity-100 transition-opacity">
+                      <AnalyzeButton repo={repo} onNotice={setNotice} />
                     </div>
                   </td>
                 </tr>
@@ -286,6 +325,48 @@ export function CodeQualityClient({
           </div>
         )}
       </div>
+
+      {openKey && summaries[openKey] && (() => {
+        const q = summaries[openKey];
+        const repo = repos.find((r) => `${r.owner}/${r.name}` === openKey);
+        const files = (raw: string): string[] => { try { return JSON.parse(raw) as string[]; } catch { return []; } };
+        const fileMap: Partial<Record<keyof RepoQualityModel, string[]>> = { hasCi: files(q.ciFiles), hasTests: files(q.testFiles), hasLint: files(q.lintFiles) };
+        return (
+          <DetailDrawer
+            onClose={() => setOpenKey(null)}
+            label={`Qualité de ${openKey}`}
+            headerRight={repo ? <Link href={`/repos/${repo.owner}/${repo.name}`} className="rounded border border-border px-2.5 py-1 text-[12px] hover:bg-muted">Ouvrir le dépôt</Link> : undefined}
+          >
+            <div>
+              <p className="text-[12px] text-muted-foreground">{openKey} · branche {q.defaultBranch}</p>
+              <div className="flex items-baseline gap-2 mt-1">
+                <span className={cn("text-3xl font-bold tabular-nums", scoreColor(q.score))}>{q.score}</span>
+                <span className="text-sm text-muted-foreground">/ 100</span>
+              </div>
+              <p className="text-[12px] text-muted-foreground mt-1">Analysé le {new Date(q.checkedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}</p>
+            </div>
+            <DrawerSection title="Bonnes pratiques">
+              <ul className="rounded-md border border-border divide-y divide-border">
+                {CHECKS.map((c) => {
+                  const ok = q[c.key] as boolean;
+                  const list = fileMap[c.key] ?? [];
+                  return (
+                    <li key={c.key as string} className="px-3 py-2.5 text-[12px]">
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">{c.icon}</span>
+                        <span className="font-medium">{c.label}</span>
+                        {ok ? <IconCheck size={13} className="text-green-600" /> : <IconX size={13} className="text-red-400" />}
+                        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{ok ? c.weight : 0} / {c.weight} pts</span>
+                      </div>
+                      {list.length > 0 && <p className="font-mono text-[11px] text-muted-foreground mt-1 break-all">{list.slice(0, 5).join(", ")}{list.length > 5 ? ` +${list.length - 5}` : ""}</p>}
+                    </li>
+                  );
+                })}
+              </ul>
+            </DrawerSection>
+          </DetailDrawer>
+        );
+      })()}
     </div>
   );
 }

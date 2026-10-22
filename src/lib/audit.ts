@@ -1,6 +1,6 @@
-"use server";
+import "server-only";
 
-import { getOctokit } from "./github";
+import { describeGithubError, getOctokit } from "./github";
 import { db } from "./db";
 
 export type AlertSource = "code_scanning" | "dependabot" | "secret_scanning";
@@ -18,6 +18,8 @@ export interface AuditAlert {
   createdAt: string;
   // Secret scanning specific
   secretType?: string;
+  /** Dependabot : « malware » pour un paquet malveillant, sinon « general ». */
+  classification?: string;
 }
 
 export interface AuditSummary {
@@ -27,6 +29,8 @@ export interface AuditSummary {
   csTotal: number; csCritical: number; csHigh: number; csMedium: number; csLow: number;
   dbTotal: number; dbCritical: number; dbHigh: number; dbMedium: number; dbLow: number;
   ssTotal: number; ssActive: number;
+  /** "ok" | "disabled" | "no-access" | "unknown" (audit antérieur à l'enregistrement des états). */
+  csState: string; dbState: string; ssState: string;
 }
 
 // ─── Severity mapping ──────────────────────────────────────────────────────────
@@ -57,21 +61,67 @@ function severityRank(s: AlertSeverity): number {
   return { critical: 4, high: 3, medium: 2, low: 1, warning: 1, note: 0, unknown: 0 }[s] ?? 0;
 }
 
+// ─── États des sources et collecte paginée ─────────────────────────────────────
+
+/** ok = interrogée ; disabled = fonction non activée sur le dépôt ; no-access = droits insuffisants. */
+export type AuditSourceState = "ok" | "disabled" | "no-access";
+
+interface SourceResult {
+  state: AuditSourceState;
+  alerts: AuditAlert[];
+}
+
+/** Au moins une source n'a pas pu être interrogée (GitHub en erreur) : rien n'est enregistré. */
+export class AuditFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuditFailedError";
+  }
+}
+
+const MAX_ALERTS_PER_SOURCE = 1000;
+
+async function collectPages<T>(pages: AsyncIterable<{ data: T[] }>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const page of pages) {
+    out.push(...page.data);
+    if (out.length >= MAX_ALERTS_PER_SOURCE) break;
+  }
+  return out.slice(0, MAX_ALERTS_PER_SOURCE);
+}
+
+/** « Fonction désactivée » et « droits insuffisants » sont des états normaux ; le reste est une vraie erreur. */
+function classify(error: unknown): { state: Exclude<AuditSourceState, "ok"> } | null {
+  const e = error as { status?: number; message?: string };
+  const message = String(e?.message ?? "");
+  if (/rate limit/i.test(message)) return null;
+  if ((e?.status === 403 || e?.status === 404) && /not enabled|disabled|must be enabled|no analysis found|advanced security/i.test(message)) {
+    return { state: "disabled" };
+  }
+  if (e?.status === 403) return { state: "no-access" };
+  if (e?.status === 404) return { state: "disabled" };
+  return null;
+}
+
+async function runSource(label: string, fetchAlerts: () => Promise<AuditAlert[]>): Promise<SourceResult> {
+  try {
+    return { state: "ok", alerts: await fetchAlerts() };
+  } catch (error) {
+    const known = classify(error);
+    if (known) return { state: known.state, alerts: [] };
+    throw new AuditFailedError(`${label} : ${describeGithubError(error)}`);
+  }
+}
+
 // ─── Fetch functions ───────────────────────────────────────────────────────────
 
-async function fetchCodeScanningAlerts(
-  octokit: ReturnType<typeof getOctokit>,
-  owner: string,
-  repo: string
-): Promise<AuditAlert[]> {
-  try {
-    const { data } = await octokit.codeScanning.listAlertsForRepo({
-      owner, repo, state: "open", per_page: 100,
-    });
-    return data.map((a) => ({
+const fetchCodeScanningAlerts = (octokit: ReturnType<typeof getOctokit>, owner: string, repo: string) =>
+  runSource("Code Scanning", async () => {
+    const data = await collectPages(octokit.paginate.iterator(octokit.codeScanning.listAlertsForRepo, { owner, repo, state: "open", per_page: 100 }));
+    return data.map((a): AuditAlert => ({
       id: `cs-${a.number}`,
       source: "code_scanning",
-      severity: mapCsSeverity(a.rule?.severity),
+      severity: mapCsSeverity(a.rule?.security_severity_level ?? a.rule?.severity),
       title: a.rule?.description ?? a.rule?.id ?? "Code scanning alert",
       description: a.most_recent_instance?.message?.text ?? "",
       state: (a.state as AuditAlert["state"]) ?? "open",
@@ -79,23 +129,12 @@ async function fetchCodeScanningAlerts(
       path: a.most_recent_instance?.location?.path,
       createdAt: a.created_at ?? new Date().toISOString(),
     }));
-  } catch (e: any) {
-    // 403 = not enabled, 404 = not found — both are normal
-    if (e?.status === 403 || e?.status === 404) return [];
-    throw e;
-  }
-}
+  });
 
-async function fetchDependabotAlerts(
-  octokit: ReturnType<typeof getOctokit>,
-  owner: string,
-  repo: string
-): Promise<AuditAlert[]> {
-  try {
-    const { data } = await octokit.dependabot.listAlertsForRepo({
-      owner, repo, state: "open", per_page: 100,
-    });
-    return data.map((a) => ({
+const fetchDependabotAlerts = (octokit: ReturnType<typeof getOctokit>, owner: string, repo: string) =>
+  runSource("Dependabot", async () => {
+    const data = await collectPages(octokit.paginate.iterator(octokit.dependabot.listAlertsForRepo, { owner, repo, state: "open", per_page: 100 }));
+    return data.map((a): AuditAlert => ({
       id: `db-${a.number}`,
       source: "dependabot",
       severity: mapDbSeverity(a.security_advisory?.severity),
@@ -105,23 +144,14 @@ async function fetchDependabotAlerts(
       url: a.html_url ?? "",
       path: a.dependency?.manifest_path,
       createdAt: a.created_at ?? new Date().toISOString(),
+      classification: (a.security_advisory as { classification?: string } | undefined)?.classification,
     }));
-  } catch (e: any) {
-    if (e?.status === 403 || e?.status === 404) return [];
-    throw e;
-  }
-}
+  });
 
-async function fetchSecretScanningAlerts(
-  octokit: ReturnType<typeof getOctokit>,
-  owner: string,
-  repo: string
-): Promise<AuditAlert[]> {
-  try {
-    const { data } = await octokit.secretScanning.listAlertsForRepo({
-      owner, repo, state: "open", per_page: 100,
-    });
-    return data.map((a) => ({
+const fetchSecretScanningAlerts = (octokit: ReturnType<typeof getOctokit>, owner: string, repo: string) =>
+  runSource("Secret Scanning", async () => {
+    const data = await collectPages(octokit.paginate.iterator(octokit.secretScanning.listAlertsForRepo, { owner, repo, state: "open", per_page: 100 }));
+    return data.map((a): AuditAlert => ({
       id: `ss-${a.number}`,
       source: "secret_scanning",
       severity: "critical",
@@ -132,11 +162,7 @@ async function fetchSecretScanningAlerts(
       createdAt: a.created_at ?? new Date().toISOString(),
       secretType: a.secret_type ?? undefined,
     }));
-  } catch (e: any) {
-    if (e?.status === 403 || e?.status === 404) return [];
-    throw e;
-  }
-}
+  });
 
 // ─── Main audit function ───────────────────────────────────────────────────────
 
@@ -147,16 +173,18 @@ export async function auditRepo(
 ): Promise<{ summary: AuditSummary; alerts: AuditAlert[] }> {
   const octokit = getOctokit(token);
 
-  const [csAlerts, dbAlerts, ssAlerts] = await Promise.all([
+  const [cs, dep, ss] = await Promise.all([
     fetchCodeScanningAlerts(octokit, owner, repo),
     fetchDependabotAlerts(octokit, owner, repo),
     fetchSecretScanningAlerts(octokit, owner, repo),
   ]);
+  const csAlerts = cs.alerts;
+  const dbAlerts = dep.alerts;
+  const ssAlerts = ss.alerts;
 
   const allAlerts = [...csAlerts, ...dbAlerts, ...ssAlerts]
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 
-  // Code scanning counts
   const count = (arr: AuditAlert[], sev: AlertSeverity) => arr.filter((a) => a.severity === sev).length;
   const csTotal = csAlerts.length;
   const csCritical = count(csAlerts, "critical");
@@ -172,6 +200,7 @@ export async function auditRepo(
 
   const ssTotal = ssAlerts.length;
   const ssActive = ssAlerts.filter((a) => a.state === "open").length;
+  const states = { csState: cs.state, dbState: dep.state, ssState: ss.state };
 
   await db.repoAudit.upsert({
     where: { owner_repo: { owner, repo } },
@@ -181,6 +210,7 @@ export async function auditRepo(
       dbTotal, dbCritical, dbHigh, dbMedium, dbLow,
       ssTotal, ssActive,
       alerts: JSON.stringify(allAlerts),
+      ...states,
     },
     update: {
       checkedAt: new Date(),
@@ -188,33 +218,21 @@ export async function auditRepo(
       dbTotal, dbCritical, dbHigh, dbMedium, dbLow,
       ssTotal, ssActive,
       alerts: JSON.stringify(allAlerts),
+      ...states,
     },
   });
 
-  console.log(`[audit] ${owner}/${repo}: CS=${csTotal} DB=${dbTotal} SS=${ssTotal}`);
+  console.log(`[audit] ${owner}/${repo}: CS=${csTotal}(${cs.state}) DB=${dbTotal}(${dep.state}) SS=${ssTotal}(${ss.state})`);
 
   const summary: AuditSummary = {
     owner, repo, checkedAt: new Date(),
     csTotal, csCritical, csHigh, csMedium, csLow,
     dbTotal, dbCritical, dbHigh, dbMedium, dbLow,
     ssTotal, ssActive,
+    ...states,
   };
 
   return { summary, alerts: allAlerts };
-}
-
-export async function auditAllRepos(
-  token: string,
-  repos: { owner: string; name: string }[]
-): Promise<number> {
-  const CONCURRENCY = 5;
-  let done = 0;
-  for (let i = 0; i < repos.length; i += CONCURRENCY) {
-    const batch = repos.slice(i, i + CONCURRENCY);
-    await Promise.allSettled(batch.map((r) => auditRepo(token, r.owner, r.name)));
-    done += batch.length;
-  }
-  return done;
 }
 
 export async function getAuditSummaries(
@@ -227,6 +245,7 @@ export async function getAuditSummaries(
       csTotal: true, csCritical: true, csHigh: true, csMedium: true, csLow: true,
       dbTotal: true, dbCritical: true, dbHigh: true, dbMedium: true, dbLow: true,
       ssTotal: true, ssActive: true,
+      csState: true, dbState: true, ssState: true,
     },
   });
   return new Map(rows.map((r) => [`${r.owner}/${r.repo}`, r as AuditSummary]));

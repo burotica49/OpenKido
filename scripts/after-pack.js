@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 // electron-builder afterPack hook.
 // Copies the Next.js standalone server into Contents/Resources/nextjs.
 // We do this here (not via extraResources) because electron-builder
@@ -18,10 +19,16 @@ exports.default = async function afterPack(context) {
   // Standalone server (includes node_modules, src/generated, .env).
   // dereference: codesign rejects symlinks pointing outside the bundle;
   // .bin is excluded (symlink farm, useless at runtime).
-  fs.cpSync(path.join(root, ".next", "standalone"), dest, {
+  const standalone = path.join(root, ".next", "standalone");
+  fs.cpSync(standalone, dest, {
     recursive: true,
     dereference: true,
-    filter: (src) => !src.includes(`${path.sep}node_modules${path.sep}.bin`),
+    filter: (src) => {
+      if (src.includes(`${path.sep}node_modules${path.sep}.bin`)) return false;
+      // Sorties de build tracées par Next dans le standalone (ancien .app → échec de codesign).
+      const rel = path.relative(standalone, src).split(path.sep)[0];
+      return !["dist", "build", ".git", "release"].includes(rel);
+    },
   });
 
   // Static assets + public
@@ -44,6 +51,14 @@ exports.default = async function afterPack(context) {
     throw new Error("build/template.db manquant — lancez `npm run electron:template-db` avant le build");
   }
   fs.cpSync(template, path.join(prismaDest, "template.db"));
+
+  // Migrations SQL : appliquées au démarrage du serveur (src/instrumentation.ts),
+  // ce qui met aussi à jour les bases créées par une version précédente de l'app.
+  const migrations = path.join(root, "prisma", "migrations");
+  if (!fs.existsSync(migrations)) {
+    throw new Error("prisma/migrations manquant");
+  }
+  fs.cpSync(migrations, path.join(prismaDest, "migrations"), { recursive: true });
 
   console.log(`[after-pack] Next.js standalone copié vers ${dest}`);
 };

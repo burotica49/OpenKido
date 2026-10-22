@@ -1,10 +1,15 @@
-import { auth, signIn } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { IconBrandGithub, IconShieldBolt } from "@tabler/icons-react";
+import { headers } from "next/headers";
+import { IconShieldBolt } from "@tabler/icons-react";
+import { SignInButton } from "@/components/auth/sign-in-button";
 
 export default async function Home() {
   const session = await auth();
-  if (session) redirect("/repos");
+  if (session) redirect("/issues");
+
+  const ua = (await headers()).get("user-agent") ?? "";
+  const isElectron = /Electron/i.test(ua);
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center gap-8 px-4">
@@ -19,22 +24,9 @@ export default async function Home() {
         </p>
       </div>
 
-      <form
-        action={async () => {
-          "use server";
-          await signIn("github", { redirectTo: "/repos" });
-        }}
-      >
-        <button
-          type="submit"
-          className="inline-flex items-center gap-2.5 rounded-lg bg-foreground text-background px-5 py-2.5 text-sm font-medium transition-opacity hover:opacity-80"
-        >
-          <IconBrandGithub size={17} />
-          Continuer avec GitHub
-        </button>
-      </form>
+      <SignInButton electronHint={isElectron} />
 
-      <p className="text-[11px] text-muted-foreground">Permissions demandées : lecture des repos · lecture des dépendances</p>
+      <p className="text-[11px] text-muted-foreground">Permissions demandées : lecture des repos et des organisations</p>
     </div>
   );
 }

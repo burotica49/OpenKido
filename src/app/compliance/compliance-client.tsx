@@ -1,16 +1,20 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   IconCheck,
   IconX,
   IconAlertTriangle,
   IconMinus,
+  IconHelpCircle,
   IconDownload,
   IconShieldCheck,
   IconBuilding,
 } from "@tabler/icons-react";
+import { HelpPanel, Term } from "@/components/app/help-panel";
 import type { FrameworkReport, ControlStatus } from "@/lib/compliance";
+import { DetailDrawer, DrawerSection } from "@/components/app/detail-drawer";
 import { cn } from "@/lib/utils";
 
 // ─── Status helpers ────────────────────────────────────────────────────────────
@@ -20,6 +24,7 @@ const statusConfig: Record<ControlStatus, { icon: React.ReactNode; label: string
   fail:    { icon: <IconX size={13} />,            label: "Non conforme", cls: "badge-critical" },
   warning: { icon: <IconAlertTriangle size={13} />, label: "Partiel",     cls: "badge-warning" },
   na:      { icon: <IconMinus size={13} />,        label: "N/A",         cls: "badge-muted" },
+  unknown: { icon: <IconHelpCircle size={13} />,   label: "Non évalué",  cls: "badge-muted" },
 };
 
 // ─── Score ring SVG ────────────────────────────────────────────────────────────
@@ -61,7 +66,11 @@ function FrameworkTab({ report, active, onClick }: { report: FrameworkReport; ac
       <div className="min-w-0">
         <p className="text-[13px] font-medium truncate">{framework.shortName}</p>
         <p className={cn("text-[11px]", active ? "text-violet-500" : "text-muted-foreground")}>
-          {failCount > 0 ? `${failCount} non conforme${failCount > 1 ? "s" : ""}` : "Conforme"}
+          {failCount > 0
+            ? `${failCount} non conforme${failCount > 1 ? "s" : ""}`
+            : report.unknownCount > 0
+              ? `Aucun écart · ${report.unknownCount} non évalué${report.unknownCount > 1 ? "s" : ""}`
+              : "Conforme"}
         </p>
       </div>
     </button>
@@ -71,7 +80,8 @@ function FrameworkTab({ report, active, onClick }: { report: FrameworkReport; ac
 // ─── Controls table ────────────────────────────────────────────────────────────
 
 function ControlsTable({ report }: { report: FrameworkReport }) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const openCtrl = report.controls.find((c) => c.id === openId);
   const categories = [...new Set(report.controls.map((c) => c.category))];
 
   return (
@@ -83,6 +93,7 @@ function ControlsTable({ report }: { report: FrameworkReport }) {
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" />{report.warnCount} partiels</span>
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500" />{report.failCount} non conformes</span>
           {report.naCount > 0 && <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-muted" />{report.naCount} N/A</span>}
+          {report.unknownCount > 0 && <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-muted-foreground/40" />{report.unknownCount} non évalué{report.unknownCount > 1 ? "s" : ""}</span>}
         </div>
       </div>
 
@@ -93,41 +104,44 @@ function ControlsTable({ report }: { report: FrameworkReport }) {
           </div>
           {report.controls
             .filter((c) => c.category === cat)
-            .map((ctrl, i, arr) => {
+            .map((ctrl) => {
               const sc = statusConfig[ctrl.status];
-              const expanded = expandedId === ctrl.id;
+              const active = openId === ctrl.id;
               return (
-                <div key={ctrl.id} className={cn("border-b border-border last:border-0")}>
-                  <button
-                    className="w-full flex items-start gap-4 px-6 py-3 hover:bg-muted/20 transition-colors text-left"
-                    onClick={() => setExpandedId(expanded ? null : ctrl.id)}
-                  >
-                    <span className="font-mono text-[11px] text-muted-foreground w-20 shrink-0 pt-0.5">{ctrl.id}</span>
-                    <span className="flex-1 text-[13px] min-w-0">{ctrl.title}</span>
-                    <span className={cn("inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-medium shrink-0", sc.cls)}>
-                      {sc.icon}
-                      {sc.label}
-                    </span>
-                  </button>
-                  {expanded && (
-                    <div className="px-6 pb-4 pt-0 ml-24 text-[12px] text-muted-foreground space-y-2">
-                      <p>{ctrl.description}</p>
-                      <div className={cn("flex items-start gap-2 rounded-lg px-3 py-2", {
-                        "bg-emerald-500/8": ctrl.status === "pass",
-                        "bg-red-500/8": ctrl.status === "fail",
-                        "bg-amber-500/8": ctrl.status === "warning",
-                        "bg-muted/40": ctrl.status === "na",
-                      })}>
-                        <span className="shrink-0 mt-0.5">{sc.icon}</span>
-                        <span>{ctrl.evidence}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <button
+                  key={ctrl.id}
+                  className={cn("w-full flex items-start gap-4 px-6 py-3 hover:bg-muted/20 transition-colors text-left border-b border-border border-l-2", active ? "border-l-violet-600 bg-violet-50/40" : "border-l-transparent")}
+                  onClick={() => setOpenId(active ? null : ctrl.id)}
+                >
+                  <span className="font-mono text-[11px] text-muted-foreground w-20 shrink-0 pt-0.5">{ctrl.id}</span>
+                  <span className="flex-1 text-[13px] min-w-0">{ctrl.title}</span>
+                  <span className={cn("inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-medium shrink-0", sc.cls)}>
+                    {sc.icon}
+                    {sc.label}
+                  </span>
+                </button>
               );
             })}
         </div>
       ))}
+      {openCtrl && (
+        <DetailDrawer onClose={() => setOpenId(null)} label={`Détail du contrôle ${openCtrl.id}`}>
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className={cn("inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-medium", statusConfig[openCtrl.status].cls)}>
+                {statusConfig[openCtrl.status].icon}{statusConfig[openCtrl.status].label}
+              </span>
+            </div>
+            <p className="font-mono text-[11px] text-muted-foreground">{report.framework.shortName} · {openCtrl.id} · {openCtrl.category}</p>
+            <h2 className="text-lg font-semibold mt-0.5">{openCtrl.title}</h2>
+          </div>
+          <DrawerSection title="Exigence"><p className="text-[13px] leading-relaxed">{openCtrl.description}</p></DrawerSection>
+          <DrawerSection title="Constat"><p className="text-[13px] leading-relaxed break-words">{openCtrl.evidence}</p></DrawerSection>
+          <DrawerSection title="À savoir">
+            <p className="text-[12px] text-muted-foreground">Ce contrôle est évalué à partir des résultats de vos scans de dépendances. Il aide à préparer un audit, il ne remplace pas une certification.</p>
+          </DrawerSection>
+        </DetailDrawer>
+      )}
     </div>
   );
 }
@@ -157,6 +171,13 @@ export function ComplianceClient({
 
   return (
     <div className="flex flex-col flex-1 bg-white">
+
+      <HelpPanel>
+        <p>Cette page traduit les vulnérabilités trouvées dans vos dépendances en <Term>référentiels de conformité</Term> reconnus (SOC 2, ISO 27001, OWASP Top 10, PCI DSS). Elle sert à préparer un audit ou à répondre à un client, elle ne remplace pas une certification.</p>
+        <p><Term>Contrôle</Term> : une exigence du référentiel (par exemple « gérer les vulnérabilités connues »). Chaque exigence est évaluée à partir des résultats de vos scans.</p>
+        <p><Term>Conforme</Term> = exigence respectée ; <Term>Partiel</Term> = respectée en partie ou scan incomplet ; <Term>Non conforme</Term> = des vulnérabilités empêchent de la satisfaire ; <Term>Non évalué</Term> = pas assez de données (scannez d&apos;abord vos dépôts) ; <Term>N/A</Term> = ne s&apos;applique pas.</p>
+        <p><Term>Score</Term> : pourcentage de contrôles conformes. Vert à partir de 75 %, orange de 50 à 74 %, rouge en dessous.</p>
+      </HelpPanel>
 
       {/* Stats bar */}
       <div className="grid grid-cols-4 divide-x divide-border border-b border-border bg-white">
@@ -197,10 +218,10 @@ export function ComplianceClient({
               onClick={() => setActiveId(r.framework.id)}
             />
           ))}
-          <button className="mt-auto flex items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-[12px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+          <Link href="/report" className="mt-auto flex items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-[12px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
             <IconDownload size={13} />
-            Exporter PDF
-          </button>
+            Rapport PDF
+          </Link>
         </div>
 
         {/* Controls */}

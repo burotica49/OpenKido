@@ -17,7 +17,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
   if (points.length < 2) {
     return (
       <div className="px-6 py-4 text-[12px] text-muted-foreground italic">
-        Pas encore assez d'historique — les tendances apparaîtront après quelques scans.
+        Pas encore assez d&apos;historique — les tendances apparaîtront après quelques scans.
       </div>
     );
   }
@@ -45,7 +45,7 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
   const delta = (last.critical + last.high) - (first.critical + first.high);
 
   return (
-    <div className="px-6 py-4 border-b border-border">
+    <div className="px-6 py-4">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-4">
           <p className="text-[13px] font-medium">Évolution des vulnérabilités</p>

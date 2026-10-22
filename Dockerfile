@@ -9,22 +9,15 @@ RUN npm ci
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-# Prisma needs these at build time
-ARG AUTH_SECRET
-ARG GITHUB_CLIENT_ID
-ARG GITHUB_CLIENT_SECRET
-ARG NEXTAUTH_URL
-
-ENV AUTH_SECRET=$AUTH_SECRET
-ENV GITHUB_CLIENT_ID=$GITHUB_CLIENT_ID
-ENV GITHUB_CLIENT_SECRET=$GITHUB_CLIENT_SECRET
-ENV NEXTAUTH_URL=$NEXTAUTH_URL
+# Aucun secret au build : AUTH_SECRET, GITHUB_CLIENT_ID/SECRET sont fournis au
+# runtime (variables d'environnement Dokploy), jamais via ARG/ENV (visibles dans
+# `docker history`).
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Generate Prisma client, then run migrations against a temp DB, then build
 RUN npx prisma generate
 RUN npx next build
 
@@ -35,26 +28,34 @@ WORKDIR /app
 RUN addgroup -S nodejs && adduser -S nextjs -G nodejs
 
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+ENV DATABASE_URL=file:/data/openkido.db
 
 # Next.js standalone output
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Prisma: schema, migrations, generated client
-COPY --from=builder /app/prisma ./prisma
+# Migrations SQL : appliquées au démarrage par src/instrumentation.ts (aucun
+# téléchargement de la CLI Prisma au runtime).
+COPY --from=builder /app/prisma/migrations ./prisma/migrations
+
+# Client Prisma généré (src/generated, Prisma 7) + pilote libsql natif
 COPY --from=builder /app/src/generated ./src/generated
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/node_modules/@libsql ./node_modules/@libsql
 
-# Data directory for SQLite (mounted as a volume in prod)
+# Répertoire de la base SQLite (à monter en volume persistant)
 RUN mkdir -p /data && chown nextjs:nodejs /data
+VOLUME ["/data"]
 
 USER nextjs
 
 EXPOSE 3000
 
-# Run migrations then start
-CMD ["sh", "-c", "DATABASE_URL=file:/data/openkido.db npx prisma migrate deploy --schema=./prisma/schema.prisma && node server.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q --spider http://127.0.0.1:3000/ || exit 1
+
+CMD ["node", "server.js"]

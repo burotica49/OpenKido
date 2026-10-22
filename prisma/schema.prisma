@@ -23,6 +23,10 @@ model RepoScan {
 
   components String
 
+  // "complete" | "partial" : un scan partiel (OSV/GitHub injoignable pour une partie) ne remplace jamais un scan complet.
+  status     String   @default("complete")
+  note       String?
+
   @@unique([owner, repo])
   @@index([owner, repo])
 }
@@ -94,6 +98,37 @@ model RepoAudit {
 
   alerts      String // JSON array of AuditAlert
 
+  // État de chaque source : "ok" | "disabled" | "no-access" | "unknown" (audit antérieur à ces colonnes).
+  // Une source désactivée n'est PAS « aucune alerte ».
+  csState     String @default("unknown")
+  dbState     String @default("unknown")
+  ssState     String @default("unknown")
+
+  @@unique([owner, repo])
+}
+
+model RepoPosture {
+  id            Int      @id @default(autoincrement())
+  owner         String
+  repo          String
+  checkedAt     DateTime @default(now())
+
+  score         Int      // 0-100 sur les contrôles évaluables
+  total         Int
+  evaluated     Int
+  passed        Int
+  failed        Int
+  warning       Int
+  unknown       Int
+  failCritical  Int
+  failHigh      Int
+  failMedium    Int
+  failLow       Int
+
+  isPrivate     Boolean
+  defaultBranch String
+  results       String   // JSON ControlResult[]
+
   @@unique([owner, repo])
 }
 
@@ -120,4 +155,81 @@ model Domain {
   hasXFrame   Boolean?
   hasXContent Boolean?
   hasRp       Boolean?   // Referrer-Policy
+}
+
+model UserPref {
+  githubLogin String   @id
+  selectedOrg String   @default("")
+  updatedAt   DateTime @updatedAt
+}
+
+// État d'une alerte du Feed (ignorée, reportée, assignée). La clé est l'empreinte stable de l'alerte
+// (voir src/lib/issues-core.ts). Une ligne par utilisateur GitHub : une base partagée (web) n'est pas mélangée.
+model IssueState {
+  githubLogin String
+  key         String
+  // "open" (simple assignation) | "ignored" | "snoozed"
+  status      String   @default("open")
+  // "false-positive" | "accepted-risk" | "not-used" | "mitigated" | "other"
+  reason      String   @default("")
+  note        String   @default("")
+  until       DateTime?
+  assignee    String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@id([githubLogin, key])
+  @@index([githubLogin, status])
+}
+
+// Analyse des secrets faite par Openkido (indépendante de GitHub Secret Scanning). Les valeurs ne sont jamais
+// conservées : `findings` ne contient que des aperçus masqués et des empreintes.
+model RepoSecrets {
+  id           Int      @id @default(autoincrement())
+  owner        String
+  repo         String
+  checkedAt    DateTime @default(now())
+
+  // "complete" | "partial" (fichiers ignorés car trop volumineux ou archive tronquée)
+  status       String   @default("complete")
+  filesScanned Int
+  filesSkipped Int
+  total        Int
+  critical     Int
+  high         Int
+  medium       Int
+  low          Int
+  findings     String   // JSON SecretFinding[]
+  note         String?
+
+  @@unique([owner, repo])
+}
+
+// Cache des licences déclarées par version de paquet (source : deps.dev). `license` = expression SPDX,
+// ou "NONE" si le paquet ne déclare aucune licence.
+model PackageLicense {
+  ecosystem String
+  name      String
+  version   String
+  license   String
+  fetchedAt DateTime @default(now())
+
+  @@id([ecosystem, name, version])
+}
+
+// Suivi des alertes dans le temps (cartes « Nouvelles » et « Résolues » du Feed). Une ligne par alerte et par
+// utilisateur ; `baseline` marque le premier relevé, dont les alertes ne comptent pas comme nouvelles.
+model IssueHistory {
+  githubLogin String
+  key         String
+  kind        String
+  severity    String
+  target      String
+  title       String
+  firstSeen   DateTime
+  resolvedAt  DateTime?
+  baseline    Boolean  @default(false)
+
+  @@id([githubLogin, key])
+  @@index([githubLogin, resolvedAt])
 }

@@ -8,8 +8,10 @@ import {
   IconLock, IconLockOpen, IconAlertTriangle,
   IconCheck, IconX, IconExternalLink,
 } from "@tabler/icons-react";
-import { addDomain, deleteDomain, recheckDomain } from "@/lib/domain-check";
+import { addDomain, deleteDomain, recheckDomain } from "@/lib/actions/domains";
 import type { DomainModel as Domain } from "@/generated/prisma/models/Domain";
+import { HelpPanel, Term } from "@/components/app/help-panel";
+import { DetailDrawer, DrawerSection } from "@/components/app/detail-drawer";
 import { TopBar, PageHeader } from "@/components/app/sidebar";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -68,12 +70,12 @@ const SCORE_CONFIG = {
 
 // ─── Ligne d'action ───────────────────────────────────────────────────
 
-function DomainActions({ domain, onDone }: { domain: string; onDone: () => void }) {
+function DomainActions({ domain, onDone, always = false }: { domain: string; onDone: () => void; always?: boolean }) {
   const [rechecking, startRecheck] = useTransition();
   const [deleting, startDelete] = useTransition();
 
   return (
-    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div className={cn("flex items-center gap-1 transition-opacity", !always && "opacity-0 group-hover:opacity-100")}>
       <button
         onClick={() => startRecheck(async () => { await recheckDomain(domain); onDone(); })}
         disabled={rechecking}
@@ -104,12 +106,12 @@ function AddDomainForm({ onDone }: { onDone: () => void }) {
     e.preventDefault();
     setError("");
     startTransition(async () => {
-      try {
-        await addDomain(value.trim());
+      const result = await addDomain(value.trim());
+      if (result.ok) {
         setValue("");
         onDone();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Erreur");
+      } else {
+        setError(result.error);
       }
     });
   }
@@ -145,6 +147,8 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
   const router = useRouter();
   const refresh = () => router.refresh();
 
+  const [openId, setOpenId] = useState<number | null>(null);
+  const openDomain = initial.find((d) => d.id === openId);
   const counts = { ok: 0, warn: 0, critical: 0, unknown: 0 };
   for (const d of initial) counts[globalScore(d)]++;
 
@@ -155,6 +159,13 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
       <PageHeader title="Domains" subtitle="Surveillance SSL, headers et statut HTTP de vos domaines">
         <AddDomainForm onDone={refresh} />
       </PageHeader>
+
+      <HelpPanel>
+        <p>Pour chaque nom de domaine ajouté, l&apos;application vérifie, à chaque vérification lancée, que le site est joignable et bien configuré côté sécurité.</p>
+        <p><Term>Certificat SSL</Term> : ce qui permet le cadenas HTTPS. Un certificat expiré affiche un avertissement à vos visiteurs ; la page indique le nombre de jours restants.</p>
+        <p><Term>En-têtes de sécurité</Term> (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy) : consignes envoyées au navigateur pour limiter les attaques courantes (détournement de page, injection de scripts…). Plus il y en a, mieux le site est protégé.</p>
+        <p><Term>Statuts</Term> : <Term>Sain</Term> = tout est en ordre ; <Term>Attention</Term> = certificat bientôt expiré ou en-têtes manquants ; <Term>Critique</Term> = certificat invalide/expiré ou site injoignable ; <Term>Non vérifié</Term> = pas encore testé.</p>
+      </HelpPanel>
 
       {/* Summary */}
       {initial.length > 0 && (
@@ -210,7 +221,11 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
                   : null;
 
                 return (
-                  <tr key={d.id} className="hover:bg-muted/20 transition-colors group">
+                  <tr
+                    key={d.id}
+                    onClick={() => setOpenId(openId === d.id ? null : d.id)}
+                    className={cn("hover:bg-muted/20 transition-colors group cursor-pointer border-l-2", openId === d.id ? "border-l-violet-600 bg-violet-50/40" : "border-l-transparent")}
+                  >
                     <td className="px-6 py-3">
                       <div className={cn("flex items-center gap-1.5 font-medium text-[12px]", cfg.className)}>
                         {cfg.icon} {cfg.label}
@@ -219,7 +234,7 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{d.domain}</span>
-                        <a href={`https://${d.domain}`} target="_blank" rel="noopener noreferrer"
+                        <a href={`https://${d.domain}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
                           className="text-muted-foreground hover:text-foreground transition-colors">
                           <IconExternalLink size={12} />
                         </a>
@@ -241,7 +256,7 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
                     <td className="px-4 py-3 text-[12px] text-muted-foreground whitespace-nowrap">
                       {checkedAt ?? <span className="italic">—</span>}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <DomainActions domain={d.domain} onDone={refresh} />
                     </td>
                   </tr>
@@ -251,6 +266,57 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
           </table>
         )}
       </div>
+
+      {openDomain && (() => {
+        const d = openDomain;
+        const cfg = SCORE_CONFIG[globalScore(d)];
+        const headers: { label: string; value: boolean | null; help: string }[] = [
+          { label: "HSTS", value: d.hasHsts, help: "Force le navigateur à utiliser HTTPS, même si le visiteur tape http://." },
+          { label: "CSP (Content-Security-Policy)", value: d.hasCsp, help: "Limite les sources de scripts et de contenus autorisées : freine l'injection de code (XSS)." },
+          { label: "X-Frame-Options", value: d.hasXFrame, help: "Empêche d'afficher votre site dans une page tierce (détournement de clic)." },
+          { label: "X-Content-Type-Options", value: d.hasXContent, help: "Empêche le navigateur de deviner le type d'un fichier (attaques par contenu déguisé)." },
+          { label: "Referrer-Policy", value: d.hasRp, help: "Limite les informations d'URL transmises aux sites visités ensuite." },
+        ];
+        return (
+          <DetailDrawer
+            onClose={() => setOpenId(null)}
+            label={`Détail de ${d.domain}`}
+            headerRight={<a href={`https://${d.domain}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded border border-border px-2.5 py-1 text-[12px] hover:bg-muted">Ouvrir le site <IconExternalLink size={12} /></a>}
+            footer={<DomainActions domain={d.domain} onDone={refresh} always />}
+          >
+            <div>
+              <div className={cn("flex items-center gap-1.5 font-medium text-[12px] mb-1", cfg.className)}>{cfg.icon} {cfg.label}</div>
+              <h2 className="text-lg font-semibold break-all">{d.domain}</h2>
+              <p className="text-[12px] text-muted-foreground mt-0.5">
+                {d.checkedAt ? `Vérifié le ${new Date(d.checkedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}` : "Pas encore vérifié"}
+                {d.ipAddress ? ` · ${d.ipAddress}` : ""}
+              </p>
+            </div>
+            <DrawerSection title="Connexion">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {statusBadge(d)}
+                {d.httpsRedirect === true && <Pill icon={<IconLock size={11} />} label="HTTP → HTTPS" className="text-green-700 bg-green-50 border-green-200" />}
+                {d.httpsRedirect === false && <Pill icon={<IconLockOpen size={11} />} label="Pas de redirection HTTPS" className="text-amber-600 bg-amber-50 border-amber-200" />}
+              </div>
+            </DrawerSection>
+            <DrawerSection title="Certificat SSL">
+              <div className="flex items-center gap-1.5 flex-wrap mb-2">{sslBadge(d) ?? <span className="text-[12px] text-muted-foreground">Non vérifié</span>}</div>
+              {d.sslIssuer && <p className="text-[12px] text-muted-foreground">Émetteur : {d.sslIssuer}</p>}
+              {d.sslExpiry && <p className="text-[12px] text-muted-foreground">Expire le {new Date(d.sslExpiry).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}</p>}
+            </DrawerSection>
+            <DrawerSection title="En-têtes de sécurité">
+              <ul className="rounded-md border border-border divide-y divide-border">
+                {headers.map((h) => (
+                  <li key={h.label} className="px-3 py-2.5 text-[12px]">
+                    <div className="flex items-center gap-2"><span className="font-medium">{h.label}</span><span className="ml-auto"><BoolIcon value={h.value} /></span></div>
+                    <p className="text-muted-foreground mt-0.5">{h.help}</p>
+                  </li>
+                ))}
+              </ul>
+            </DrawerSection>
+          </DetailDrawer>
+        );
+      })()}
     </div>
   );
 }

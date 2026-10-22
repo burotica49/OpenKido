@@ -1,13 +1,22 @@
 import type { ScanResult } from "./scan";
 
-export type ControlStatus = "pass" | "fail" | "warning" | "na";
+// "unknown" = non évaluable avec les données dont on dispose : jamais compté comme conforme.
+export type ControlStatus = "pass" | "fail" | "warning" | "na" | "unknown";
+
+/** Données de contexte, au-delà des scans, nécessaires à certains contrôles. */
+export interface EvalContext {
+  /** Nombre total de dépôts dans le périmètre (scannés ou non). */
+  totalRepos: number;
+  /** Secret Scanning (Code Audit) ; null = aucun audit effectué. */
+  secrets: { alerts: number; coveredRepos: number } | null;
+}
 
 export interface Control {
   id: string;
   category: string;
   title: string;
   description: string;
-  evaluate: (scans: ScanResult[]) => { status: ControlStatus; evidence: string };
+  evaluate: (scans: ScanResult[], ctx: EvalContext) => { status: ControlStatus; evidence: string };
 }
 
 export interface Framework {
@@ -28,11 +37,21 @@ const soc2Controls: Control[] = [
     title: "Secrets & credentials non exposés",
     description:
       "Les clés API, tokens et secrets ne doivent pas apparaître dans le code source ou les dépendances.",
-    evaluate: (scans) => {
-      const hasSecrets = scans.some((s) => (s as any).secrets > 0);
-      return hasSecrets
-        ? { status: "fail", evidence: "Des secrets ont été détectés dans le code source." }
-        : { status: "pass", evidence: `Aucun secret exposé détecté dans ${scans.length} repo(s) analysé(s).` };
+    evaluate: (_scans, ctx) => {
+      const sec = ctx.secrets;
+      if (!sec) {
+        return { status: "unknown", evidence: "Aucun audit de secrets effectué — lancez « Tout auditer » dans Code Audit." };
+      }
+      if (sec.alerts > 0) {
+        return { status: "fail", evidence: `${sec.alerts} alerte(s) de secret ouverte(s) (GitHub Secret Scanning).` };
+      }
+      if (ctx.totalRepos > 0 && sec.coveredRepos >= ctx.totalRepos) {
+        return { status: "pass", evidence: `Secret Scanning actif sur ${sec.coveredRepos}/${ctx.totalRepos} dépôts, aucune alerte ouverte.` };
+      }
+      return {
+        status: "unknown",
+        evidence: `Secret Scanning actif sur ${sec.coveredRepos}/${ctx.totalRepos} dépôts seulement (les autres sont désactivés ou non audités) : absence d'alerte non concluante.`,
+      };
     },
   },
   {
@@ -56,14 +75,19 @@ const soc2Controls: Control[] = [
     title: "Couverture de scan des dépendances",
     description:
       "Toutes les dépendances tierces doivent être inventoriées et analysées.",
-    evaluate: (scans) => {
-      const scanned = scans.filter((s) => s.total > 0).length;
-      const pct = scans.length > 0 ? Math.round((scanned / scans.length) * 100) : 0;
+    evaluate: (scans, ctx) => {
+      // « Analysé » = au moins un scan (complet ou partiel) ; un scan partiel plafonne le contrôle à « à examiner ».
+      const analysed = scans.filter((s) => s.total > 0).length;
+      const partial = scans.filter((s) => s.total > 0 && s.status === "partial").length;
+      const total = Math.max(ctx.totalRepos, scans.length);
+      const pct = total > 0 ? Math.round((analysed / total) * 100) : 0;
+      if (pct === 100 && partial === 0)
+        return { status: "pass", evidence: `100 % des repos ont des dépendances analysées (${analysed}/${total}).` };
       if (pct === 100)
-        return { status: "pass", evidence: `100 % des repos scannés (${scanned}/${scans.length}).` };
+        return { status: "warning", evidence: `${partial} scan(s) incomplet(s) sur ${total} dépôt(s) : couverture non démontrée pour ceux-ci.` };
       if (pct >= 75)
-        return { status: "warning", evidence: `${pct} % des repos scannés (${scanned}/${scans.length}).` };
-      return { status: "fail", evidence: `Seulement ${pct} % des repos ont été analysés.` };
+        return { status: "warning", evidence: `${pct} % des repos analysés (${analysed}/${total}).` };
+      return { status: "fail", evidence: `Seulement ${pct} % des repos ont été analysés (${analysed}/${total}).` };
     },
   },
   {
@@ -72,10 +96,10 @@ const soc2Controls: Control[] = [
     title: "Paquets malveillants bloqués",
     description:
       "Les paquets dont le comportement est suspect ou malveillant doivent être détectés et bloqués avant installation.",
-    evaluate: (scans) => {
-      const mal = scans.reduce((acc, s) => acc + s.vulnerable, 0);
-      return { status: "pass", evidence: `Scan actif sur ${scans.length} repo(s) — détection de paquets malveillants activée.` };
-    },
+    evaluate: () => ({
+      status: "unknown",
+      evidence: "Détection de paquets malveillants non implémentée : ce contrôle n'est pas évalué.",
+    }),
   },
   {
     id: "CC8.1",
@@ -114,9 +138,10 @@ const iso27001Controls: Control[] = [
     title: "Restrictions logicielles",
     description:
       "Des règles de sécurité doivent encadrer l'installation et l'utilisation de logiciels.",
-    evaluate: (scans) => {
-      return { status: "pass", evidence: "Politique de dépendances whitelist/blacklist active (via scan pré-installation)." };
-    },
+    evaluate: () => ({
+      status: "unknown",
+      evidence: "Aucune politique de dépendances (liste d'autorisation/blocage) n'est gérée par Openkido : non évalué.",
+    }),
   },
   {
     id: "A.14.2.1",
@@ -137,9 +162,10 @@ const iso27001Controls: Control[] = [
     title: "Tests de sécurité des systèmes",
     description:
       "Des tests de sécurité doivent être intégrés au processus de développement.",
-    evaluate: (scans) => {
-      const covered = scans.filter((s) => s.total > 0).length;
-      const pct = scans.length > 0 ? Math.round((covered / scans.length) * 100) : 0;
+    evaluate: (scans, ctx) => {
+      const covered = scans.filter((s) => s.total > 0 && s.status === "complete").length;
+      const total = Math.max(ctx.totalRepos, scans.length);
+      const pct = total > 0 ? Math.round((covered / total) * 100) : 0;
       if (pct >= 90)
         return { status: "pass", evidence: `${pct} % des repos couverts par le scan automatique.` };
       return { status: "warning", evidence: `${pct} % de couverture — objectif : 90 %.` };
@@ -242,20 +268,17 @@ const owaspControls: Control[] = [
     title: "Défauts d'intégrité des données et du logiciel",
     description:
       "Code et infrastructure ne protégeant pas contre les violations d'intégrité (supply chain).",
-    evaluate: (scans) => {
-      const total = scans.reduce((acc, s) => acc + s.total, 0);
-      return { status: "pass", evidence: `${total} composants vérifiés dans la chaîne d'approvisionnement.` };
-    },
+    evaluate: () => ({
+      status: "unknown",
+      evidence: "Intégrité de la chaîne d'approvisionnement (lockfiles, provenance, signatures) non vérifiée : non évalué.",
+    }),
   },
   {
     id: "A09:2021",
     category: "Journalisation",
     title: "Carence de journalisation et de surveillance",
     description: "Absence de détection, d'escalade et de réponse aux brèches actives.",
-    evaluate: (scans) => ({
-      status: "pass",
-      evidence: "Audit trail des scans disponible — chaque scan est horodaté et tracé.",
-    }),
+    evaluate: () => ({ status: "na", evidence: "Journalisation et supervision de vos applications : hors périmètre d'une analyse de dépendances." }),
   },
 ];
 
@@ -367,11 +390,21 @@ export interface FrameworkReport {
   failCount: number;
   warnCount: number;
   naCount: number;
+  unknownCount: number;
 }
 
-export function evaluateFramework(framework: Framework, scans: ScanResult[]): FrameworkReport {
+export function evaluateFramework(
+  framework: Framework,
+  scans: ScanResult[],
+  ctx: EvalContext = { totalRepos: scans.length, secrets: null }
+): FrameworkReport {
   const evaluated: EvaluatedControl[] = framework.controls.map((ctrl) => {
-    const { status, evidence } = ctrl.evaluate(scans);
+    let { status, evidence } = ctrl.evaluate(scans, ctx);
+    // Sans aucun scan, un « conforme » ne repose sur aucune donnée : on ne l'affiche jamais.
+    if (scans.length === 0 && (status === "pass" || status === "warning")) {
+      status = "unknown";
+      evidence = "Aucun scan disponible — lancez un scan depuis la page Repositories.";
+    }
     return { id: ctrl.id, category: ctrl.category, title: ctrl.title, description: ctrl.description, status, evidence };
   });
 
@@ -379,7 +412,9 @@ export function evaluateFramework(framework: Framework, scans: ScanResult[]): Fr
   const failCount = evaluated.filter((c) => c.status === "fail").length;
   const warnCount = evaluated.filter((c) => c.status === "warning").length;
   const naCount = evaluated.filter((c) => c.status === "na").length;
-  const scoreable = evaluated.length - naCount;
+  const unknownCount = evaluated.filter((c) => c.status === "unknown").length;
+  // Les contrôles N/A et non évalués sont exclus du score (ils ne comptent ni pour ni contre).
+  const scoreable = evaluated.length - naCount - unknownCount;
   const score = scoreable > 0 ? Math.round(((passCount + warnCount * 0.5) / scoreable) * 100) : 0;
 
   return {
@@ -390,5 +425,6 @@ export function evaluateFramework(framework: Framework, scans: ScanResult[]): Fr
     failCount,
     warnCount,
     naCount,
+    unknownCount,
   };
 }

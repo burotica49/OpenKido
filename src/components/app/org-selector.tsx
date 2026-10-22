@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { IconChevronDown, IconCheck, IconLoader2 } from "@tabler/icons-react";
+import { IconChevronDown, IconCheck, IconLoader2, IconStack2 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
-
-export const ORG_COOKIE = "ok_selected_org";
+import { PERSONAL_ORG } from "@/lib/org-constants";
+import { saveSelectedOrg } from "@/lib/save-selected-org";
 
 interface Org {
   id: number;
@@ -14,35 +14,27 @@ interface Org {
   avatar_url: string;
 }
 
-function getSelectedOrg(): string | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${ORG_COOKIE}=([^;]*)`));
-  const value = match ? decodeURIComponent(match[1]) : "";
-  return value || null;
-}
-
-function setSelectedOrg(login: string) {
-  document.cookie = `${ORG_COOKIE}=${encodeURIComponent(login)}; path=/; max-age=${60 * 60 * 24 * 30}; SameSite=Lax`;
-}
-
 export function OrgSelector({
   user,
+  githubLogin,
+  selectedOrg,
 }: {
   user?: { name?: string | null; image?: string | null };
+  githubLogin?: string | null;
+  selectedOrg?: string | null;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(selectedOrg ?? null);
+  const [, startTransition] = useTransition();
   const ref = useRef<HTMLDivElement>(null);
 
-  // Read cookie on mount
   useEffect(() => {
-    setSelected(getSelectedOrg());
-  }, []);
+    setSelected(selectedOrg ?? null);
+  }, [selectedOrg]);
 
-  // Close on outside click
   useEffect(() => {
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -69,16 +61,21 @@ export function OrgSelector({
   }
 
   function handleSelect(login: string | null) {
-    const value = login ?? "";
-    setSelected(value || null);
-    setSelectedOrg(value);
+    setSelected(login);
     setOpen(false);
-    router.refresh();
+    startTransition(async () => {
+      await saveSelectedOrg(login);
+      router.refresh();
+    });
   }
 
-  const displayName = selected || user?.name || "Organisation";
+  const personalLabel = githubLogin || user?.name || "Compte personnel";
+  const selectedOrgData = orgs.find((o) => o.login === selected);
+  const displayName =
+    selected === PERSONAL_ORG
+      ? personalLabel
+      : selectedOrgData?.login || selected || "Tous les dépôts";
   const displayInitial = (displayName[0] ?? "U").toUpperCase();
-  const selectedOrg = orgs.find((o) => o.login === selected);
 
   return (
     <div ref={ref} className="relative mx-2 my-6">
@@ -88,13 +85,13 @@ export function OrgSelector({
         style={{ color: "var(--sidebar-text-strong)", background: "var(--sidebar-hover)" }}
       >
         <div className="flex items-center gap-2 min-w-0">
-          {selectedOrg ? (
-            <Image src={selectedOrg.avatar_url} alt="" width={20} height={20} className="rounded shrink-0" />
-          ) : user?.image && !selected ? (
+          {selectedOrgData ? (
+            <Image src={selectedOrgData.avatar_url} alt="" width={20} height={20} className="rounded shrink-0" />
+          ) : selected === PERSONAL_ORG && user?.image ? (
             <Image src={user.image} alt="" width={20} height={20} className="rounded-full shrink-0" />
           ) : (
             <div className="h-5 w-5 rounded bg-violet-700 flex items-center justify-center text-[10px] text-white font-bold shrink-0">
-              {displayInitial}
+              {selected ? displayInitial : <IconStack2 size={11} />}
             </div>
           )}
           <span className="truncate max-w-[110px]">{displayName}</span>
@@ -111,9 +108,18 @@ export function OrgSelector({
           className="absolute left-0 right-0 top-full mt-1 z-50 rounded-lg border shadow-lg py-1 overflow-hidden"
           style={{ background: "var(--sidebar-bg)", borderColor: "var(--sidebar-border)" }}
         >
-          {/* Personal account */}
           <button
             onClick={() => handleSelect(null)}
+            className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-white/10 transition-colors"
+            style={{ color: "var(--sidebar-text-strong)" }}
+          >
+            <IconStack2 size={16} className="shrink-0" />
+            <span className="flex-1 text-left truncate">Tous les dépôts</span>
+            {!selected && <IconCheck size={12} className="text-violet-400 shrink-0" />}
+          </button>
+
+          <button
+            onClick={() => handleSelect(PERSONAL_ORG)}
             className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-white/10 transition-colors"
             style={{ color: "var(--sidebar-text-strong)" }}
           >
@@ -121,14 +127,13 @@ export function OrgSelector({
               <Image src={user.image} alt="" width={18} height={18} className="rounded-full shrink-0" />
             ) : (
               <div className="h-[18px] w-[18px] rounded-full bg-violet-700 flex items-center justify-center text-[10px] text-white font-bold shrink-0">
-                {user?.name?.[0]?.toUpperCase() ?? "U"}
+                {personalLabel[0]?.toUpperCase() ?? "U"}
               </div>
             )}
-            <span className="flex-1 text-left truncate">{user?.name ?? "Compte personnel"}</span>
-            {!selected && <IconCheck size={12} className="text-violet-400 shrink-0" />}
+            <span className="flex-1 text-left truncate">{personalLabel}</span>
+            {selected === PERSONAL_ORG && <IconCheck size={12} className="text-violet-400 shrink-0" />}
           </button>
 
-          {/* Divider */}
           {(loading || orgs.length > 0) && (
             <div className="my-1 border-t" style={{ borderColor: "var(--sidebar-border)" }} />
           )}

@@ -1,8 +1,14 @@
-"use server";
-
-import * as tls from "tls";
-import * as dns from "dns/promises";
+import "server-only";
+import * as tls from "node:tls";
 import { db } from "./db";
+import {
+  UnsafeTargetError,
+  fetchHeadersFollowing,
+  normalizeHostname,
+  pinnedRequest,
+  resolvePublicTarget,
+  type ResolvedTarget,
+} from "./net-guard";
 
 export interface DomainCheckResult {
   domain: string;
@@ -21,62 +27,65 @@ export interface DomainCheckResult {
   hasRp: boolean;
 }
 
-async function checkSsl(hostname: string): Promise<{
+interface SslInfo {
   valid: boolean;
   expiry: Date | null;
   issuer: string | null;
   daysLeft: number | null;
-}> {
+}
+
+const SSL_UNKNOWN: SslInfo = { valid: false, expiry: null, issuer: null, daysLeft: null };
+
+// On se connecte à l'IP déjà validée (anti-rebinding) avec le nom d'hôte en SNI.
+// `rejectUnauthorized: false` sert uniquement à pouvoir inspecter un certificat invalide ;
+// la validité est ensuite jugée sur `socket.authorized` (chaîne de confiance + nom d'hôte).
+function checkSsl(target: ResolvedTarget): Promise<SslInfo> {
   return new Promise((resolve) => {
     const socket = tls.connect(
-      { host: hostname, port: 443, servername: hostname, rejectUnauthorized: false },
+      { host: target.address, port: 443, servername: target.hostname, rejectUnauthorized: false },
       () => {
         try {
           const cert = socket.getPeerCertificate();
+          const authorized = socket.authorized;
           socket.destroy();
           if (!cert || !cert.valid_to) {
-            resolve({ valid: false, expiry: null, issuer: null, daysLeft: null });
+            resolve(SSL_UNKNOWN);
             return;
           }
           const expiry = new Date(cert.valid_to);
           const daysLeft = Math.floor((expiry.getTime() - Date.now()) / 86400000);
           const rawO = cert.issuer?.O;
           const rawCN = cert.issuer?.CN;
-          const issuer = (Array.isArray(rawO) ? rawO[0] : rawO) ?? (Array.isArray(rawCN) ? rawCN[0] : rawCN) ?? null;
-          resolve({ valid: socket.authorized || daysLeft > 0, expiry, issuer, daysLeft });
+          const issuer =
+            (Array.isArray(rawO) ? rawO[0] : rawO) ?? (Array.isArray(rawCN) ? rawCN[0] : rawCN) ?? null;
+          resolve({ valid: authorized && daysLeft >= 0, expiry, issuer, daysLeft });
         } catch {
           socket.destroy();
-          resolve({ valid: false, expiry: null, issuer: null, daysLeft: null });
+          resolve(SSL_UNKNOWN);
         }
       }
     );
     socket.setTimeout(8000, () => {
       socket.destroy();
-      resolve({ valid: false, expiry: null, issuer: null, daysLeft: null });
+      resolve(SSL_UNKNOWN);
     });
-    socket.on("error", () => {
-      resolve({ valid: false, expiry: null, issuer: null, daysLeft: null });
-    });
+    socket.on("error", () => resolve(SSL_UNKNOWN));
   });
 }
 
-async function resolveIp(hostname: string): Promise<string | null> {
-  try {
-    const addrs = await dns.resolve4(hostname);
-    return addrs[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-
+/** Vérifie un domaine (SSL, redirection HTTPS, en-têtes de sécurité) et enregistre le résultat. */
 export async function checkDomain(domain: string): Promise<DomainCheckResult> {
-  const hostname = domain.replace(/^https?:\/\//, "").split("/")[0];
+  const hostname = normalizeHostname(domain);
 
-  const [ssl, ip] = await Promise.all([
-    checkSsl(hostname),
-    resolveIp(hostname),
-  ]);
+  let target: ResolvedTarget | null = null;
+  try {
+    target = await resolvePublicTarget(hostname);
+  } catch (error) {
+    // Une cible dangereuse est refusée ; un simple échec DNS est enregistré comme « injoignable ».
+    if (error instanceof UnsafeTargetError) throw error;
+  }
 
+  let ssl = SSL_UNKNOWN;
   let httpStatus: number | null = null;
   let httpsRedirect = false;
   let hasHsts = false;
@@ -85,37 +94,33 @@ export async function checkDomain(domain: string): Promise<DomainCheckResult> {
   let hasXContent = false;
   let hasRp = false;
 
-  // Check HTTP → HTTPS redirect
-  try {
-    const httpRes = await fetch(`http://${hostname}`, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(8000),
-    });
-    const location = httpRes.headers.get("location") ?? "";
-    httpsRedirect = httpRes.status >= 300 && httpRes.status < 400 && location.startsWith("https://");
-  } catch {}
+  if (target) {
+    ssl = await checkSsl(target);
 
-  // Check HTTPS headers
-  try {
-    const res = await fetch(`https://${hostname}`, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(8000),
-    });
-    httpStatus = res.status;
-    hasHsts    = res.headers.has("strict-transport-security");
-    hasCsp     = res.headers.has("content-security-policy");
-    hasXFrame  = res.headers.has("x-frame-options");
-    hasXContent = res.headers.has("x-content-type-options");
-    hasRp      = res.headers.has("referrer-policy");
-  } catch {}
+    try {
+      const res = await pinnedRequest(`http://${hostname}`);
+      const location = res.headers.location ?? "";
+      httpsRedirect = res.status >= 300 && res.status < 400 && location.startsWith("https://");
+    } catch {}
+
+    try {
+      const res = await fetchHeadersFollowing(`https://${hostname}`);
+      httpStatus = res.status;
+      hasHsts = "strict-transport-security" in res.headers;
+      hasCsp = "content-security-policy" in res.headers;
+      hasXFrame = "x-frame-options" in res.headers;
+      hasXContent = "x-content-type-options" in res.headers;
+      hasRp = "referrer-policy" in res.headers;
+    } catch {}
+  }
 
   const result: DomainCheckResult = {
     domain: hostname,
     checkedAt: new Date(),
     httpStatus,
     httpsRedirect,
-    ipAddress: ip,
-    sslValid: ssl.valid,
+    ipAddress: target?.address ?? null,
+    sslValid: target ? ssl.valid : null,
     sslExpiry: ssl.expiry,
     sslIssuer: ssl.issuer,
     sslDaysLeft: ssl.daysLeft,
@@ -126,7 +131,6 @@ export async function checkDomain(domain: string): Promise<DomainCheckResult> {
     hasRp,
   };
 
-  // Persist
   const { domain: _d, ...rest } = result;
   await db.domain.upsert({
     where: { domain: hostname },
@@ -135,27 +139,6 @@ export async function checkDomain(domain: string): Promise<DomainCheckResult> {
   });
 
   return result;
-}
-
-export async function addDomain(domain: string) {
-  const hostname = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase().trim();
-  if (!hostname || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hostname)) {
-    throw new Error("Domaine invalide");
-  }
-  await db.domain.upsert({
-    where: { domain: hostname },
-    create: { domain: hostname },
-    update: {},
-  });
-  return checkDomain(hostname);
-}
-
-export async function deleteDomain(domain: string) {
-  await db.domain.delete({ where: { domain } }).catch(() => {});
-}
-
-export async function recheckDomain(domain: string) {
-  return checkDomain(domain);
 }
 
 export async function listDomains() {

@@ -1,12 +1,16 @@
-import { redirect } from "next/navigation";
 import Link from "next/link";
-import { auth } from "@/lib/auth";
-import { getOctokit } from "@/lib/github";
-import { scanRepo } from "@/lib/scan";
-import { SevRow, SevCircle } from "@/components/app/severity-badge";
+import { loadRepoScan } from "@/lib/repo-page";
+import { getScanTrend } from "@/lib/scan";
+import { TrendChart } from "@/components/app/trend-chart";
+import { ScanStatusBanner } from "@/components/app/scan-status-banner";
+import { NeverScanned } from "@/components/app/never-scanned";
+import { ScanNowButton } from "@/components/app/scan-now-button";
+import { SevCircle } from "@/components/app/severity-badge";
+import { ComponentsTable } from "@/components/app/components-table";
+import { versionsByName } from "@/lib/components-util";
 import { buttonVariants } from "@/components/ui/button";
 import {
-  IconAlertTriangle, IconPackage, IconSparkles,
+  IconAlertTriangle, IconSparkles,
   IconClockExclamation, IconArrowRight,
 } from "@tabler/icons-react";
 
@@ -16,17 +20,16 @@ export default async function RepoDashboardPage({
   params,
 }: { params: Promise<{ owner: string; repoName: string }> }) {
   const { owner, repoName } = await params;
-  const session = await auth();
-  if (!session?.accessToken) redirect("/");
-
-  const octokit = getOctokit(session.accessToken);
-  let branch = "main";
-  try {
-    const { data } = await octokit.repos.get({ owner, repo: repoName });
-    branch = data.default_branch;
-  } catch {}
-
-  const scan = await scanRepo(session.accessToken, owner, repoName, branch);
+  const { scan } = await loadRepoScan(owner, repoName);
+  if (!scan) {
+    return (
+      <div className="px-6 py-5">
+        <NeverScanned owner={owner} repo={repoName} />
+      </div>
+    );
+  }
+  const trend = await getScanTrend([{ owner, name: repoName }]);
+  const healthy = scan.components.filter((c) => c.status === "sain").length;
 
   const top5 = scan.components
     .filter((c) => c.vulnCount > 0)
@@ -34,23 +37,27 @@ export default async function RepoDashboardPage({
     .slice(0, 5);
 
   return (
-    <div className="px-6 py-5 space-y-5 max-w-5xl">
+    <div className="px-6 py-5 space-y-5">
+      <ScanStatusBanner scan={scan} />
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="Composants scannés" value={scan.total} />
         <StatCard label="Vulnérables" value={scan.vulnerable} highlight={scan.vulnerable > 0 ? "warning" : undefined} />
         <StatCard label="Critiques" value={scan.severityBreakdown.CRITICAL} highlight={scan.severityBreakdown.CRITICAL > 0 ? "critical" : undefined} />
-        <StatCard label="Sains" value={scan.total - scan.vulnerable} highlight="ok" />
+        <StatCard label="Sains" value={healthy} highlight="ok" />
       </div>
 
       {/* Issues breakdown */}
       <div className="rounded-lg border border-border bg-white overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-border">
           <span className="text-[13px] font-medium">Issues par sévérité</span>
-          <span className="text-[12px] text-muted-foreground">
-            Scan du {new Date(scan.scannedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] text-muted-foreground">
+              Scan du {new Date(scan.scannedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}
+            </span>
+            <ScanNowButton owner={owner} repo={repoName} />
+          </div>
         </div>
         <div className="px-5 py-4 flex items-center gap-6">
           <div className="flex flex-col items-center gap-1">
@@ -72,6 +79,11 @@ export default async function RepoDashboardPage({
         </div>
       </div>
 
+      {/* Évolution des vulnérabilités */}
+      <div className="rounded-lg border border-border bg-white overflow-hidden">
+        <TrendChart points={trend} />
+      </div>
+
       {/* Top vulnerabilities */}
       {top5.length > 0 && (
         <div className="rounded-lg border border-border bg-white overflow-hidden">
@@ -84,52 +96,21 @@ export default async function RepoDashboardPage({
               Voir tout <IconArrowRight size={12} />
             </Link>
           </div>
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="border-b border-border bg-muted/20">
-                <th className="text-left px-5 py-2 text-[11px] font-medium text-muted-foreground">Composant</th>
-                <th className="text-left px-4 py-2 text-[11px] font-medium text-muted-foreground">Version</th>
-                <th className="text-left px-4 py-2 text-[11px] font-medium text-muted-foreground">Sévérité</th>
-                <th className="text-left px-4 py-2 text-[11px] font-medium text-muted-foreground">CVEs</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {top5.map((c) => (
-                <tr key={`${c.name}@${c.version}:${c.source ?? ""}`} className="hover:bg-muted/20 transition-colors">
-                  <td className="px-5 py-2.5">
-                    <Link href={`/repos/${owner}/${repoName}/components/${c.name}`} className="flex items-center gap-1.5 font-mono text-xs font-medium hover:text-violet-600 transition-colors">
-                      <IconPackage size={13} className="text-muted-foreground" />
-                      {c.name}
-                    </Link>
-                    {c.source && c.source !== "package.json" && (
-                      <p className="text-[11px] text-muted-foreground font-mono mt-0.5 pl-[19px]">
-                        {c.source.replace(/\/package\.json$/, "")}
-                      </p>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{c.version}</td>
-                  <td className="px-4 py-2.5">
-                    <SevCircle severity={c.topSeverity} count={1} />
-                  </td>
-                  <td className="px-4 py-2.5 text-muted-foreground tabular-nums">{c.vulnCount}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ComponentsTable owner={owner} repo={repoName} rows={top5} versionsByName={versionsByName(scan.components, top5)} variant="overview" />
         </div>
       )}
 
-      {scan.total === 0 && (
+      {scan.total === 0 && scan.status === "complete" && (
         <div className="rounded-lg border border-border bg-white px-5 py-10 flex flex-col items-center gap-3 text-center">
           <IconClockExclamation size={28} className="text-muted-foreground" />
           <p className="text-sm font-medium">Aucune dépendance détectée</p>
           <p className="text-xs text-muted-foreground max-w-xs">
-            Pas de <code className="font-mono">package.json</code> ni de <code className="font-mono">requirements.txt</code> trouvé (racine et sous-dossiers).
+            Aucun lockfile ni manifeste de dépendances reconnu (npm, yarn, pnpm, pip, Go, Rust, PHP, Ruby, Maven…) dans ce dépôt.
           </p>
         </div>
       )}
 
-      {scan.total > 0 && scan.vulnerable === 0 && (
+      {scan.total > 0 && scan.vulnerable === 0 && scan.status === "complete" && scan.unscanned === 0 && (
         <div className="rounded-lg border border-green-200 bg-green-50 px-5 py-4 flex items-center gap-3">
           <IconSparkles size={18} className="text-green-600 shrink-0" />
           <div>

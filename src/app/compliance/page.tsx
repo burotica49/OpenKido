@@ -5,6 +5,7 @@ import { riskLevel } from "@/lib/osv";
 import { frameworks, evaluateFramework, type FrameworkReport } from "@/lib/compliance";
 import type { ScanResult } from "@/lib/scan";
 import { getRepoScanSummaries } from "@/lib/scan";
+import { getAuditSummaries } from "@/lib/audit";
 import { getSelectedOrg, filterReposByOrg } from "@/lib/selected-org";
 import { TopBar, PageHeader } from "@/components/app/sidebar";
 import { ComplianceClient } from "./compliance-client";
@@ -22,9 +23,11 @@ export default async function CompliancePage() {
   const filteredRepos = filterReposByOrg(allRepos, selectedOrg, login);
 
   // Read from DB — no live scanning
-  const summaryMap = await getRepoScanSummaries(
-    filteredRepos.map((r) => ({ owner: r.owner, name: r.name }))
-  );
+  const repoRefs = filteredRepos.map((r) => ({ owner: r.owner, name: r.name }));
+  const [summaryMap, auditMap] = await Promise.all([
+    getRepoScanSummaries(repoRefs),
+    getAuditSummaries(repoRefs),
+  ]);
 
   // Convert DB summaries to ScanResult shape for compliance evaluation
   const scans: ScanResult[] = [];
@@ -42,11 +45,25 @@ export default async function CompliancePage() {
       vulnerable: s.vulnerable,
       components: [],
       severityBreakdown: breakdown,
+      status: s.status === "partial" ? "partial" : "complete",
+      warnings: s.note ? s.note.split(" ; ") : [],
+      unscanned: 0,
     });
   }
 
   const scannedCount = scans.length;
-  const reports: FrameworkReport[] = frameworks.map((f) => evaluateFramework(f, scans));
+  const ctx = {
+    totalRepos: filteredRepos.length,
+    // null tant qu'aucun audit n'a été fait : le contrôle « secrets » reste alors non évalué.
+    secrets:
+      auditMap.size === 0
+        ? null
+        : {
+            alerts: [...auditMap.values()].reduce((acc, a) => acc + a.ssActive, 0),
+            coveredRepos: [...auditMap.values()].filter((a) => a.ssState === "ok").length,
+          },
+  };
+  const reports: FrameworkReport[] = frameworks.map((f) => evaluateFramework(f, scans, ctx));
   const globalScore = reports.length > 0
     ? Math.round(reports.reduce((acc, r) => acc + r.score, 0) / reports.length)
     : 0;

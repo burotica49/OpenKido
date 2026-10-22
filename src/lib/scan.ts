@@ -1,15 +1,26 @@
-"use server";
+import "server-only";
 
 import { getDependencies } from "./github";
 import { scanDependencies, computeRiskScore, riskLevel, topSeverity, type ComponentVuln } from "./osv";
+import type { Ecosystem } from "./lockfiles";
 import { db } from "./db";
+import { licenseKey, lookupLicenses } from "./licenses";
+
+export type ScanStatus = "complete" | "partial";
 
 export interface ScannedComponent {
   name: string;
   version: string;
-  ecosystem: string;
+  ecosystem: Ecosystem;
   source?: string;
-  status: "vulnerable" | "sain";
+  scope?: "prod" | "dev";
+  direct?: boolean;
+  /** Licence SPDX déclarée ("NONE" = aucune) ; absent = non recherchée ou introuvable. */
+  license?: string;
+  /** false = version déclarée dans un manifeste (plage), pas une version installée. */
+  resolved: boolean;
+  /** « non-analysé » : OSV n'a pas pu être interrogé — on ne sait PAS si le composant est vulnérable. */
+  status: "vulnerable" | "sain" | "non-analysé";
   topSeverity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
   vulnCount: number;
   vulns: ComponentVuln["vulns"];
@@ -26,6 +37,12 @@ export interface ScanResult {
   vulnerable: number;
   components: ScannedComponent[];
   severityBreakdown: { CRITICAL: number; HIGH: number; MEDIUM: number; LOW: number };
+  status: ScanStatus;
+  /** Problèmes rencontrés pendant le scan (vide si `complete`). */
+  warnings: string[];
+  unscanned: number;
+  /** Scan enregistré avant l'ajout du détail des CVE : relancer le scan pour l'afficher. */
+  legacy?: boolean;
 }
 
 export interface RepoScanSummary {
@@ -38,6 +55,16 @@ export interface RepoScanSummary {
   high: number;
   medium: number;
   low: number;
+  status: string;
+  note: string | null;
+}
+
+/** Le scan a échoué : rien n'est enregistré et le dernier bon scan est conservé. */
+export class ScanFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScanFailedError";
+  }
 }
 
 // Retourne le résumé DB pour une liste de repos (pour la page liste)
@@ -56,6 +83,8 @@ export async function getRepoScanSummaries(repos: { owner: string; name: string 
       high: true,
       medium: true,
       low: true,
+      status: true,
+      note: true,
     },
   });
 
@@ -141,42 +170,62 @@ export async function getScanTrend(
   return firstIdx === -1 ? [] : points.slice(firstIdx);
 }
 
-// Repos dont le dernier scan date de plus de maxAgeH heures (ou jamais scannés)
+// Repos à (re)scanner : jamais scannés, scan complet de plus de maxAgeH heures, ou scan partiel de plus d'une heure.
 export async function getStaleRepos(
   repos: { owner: string; name: string; branch: string }[],
   maxAgeH = 24
 ): Promise<{ owner: string; name: string; branch: string }[]> {
   const summaries = await getRepoScanSummaries(repos.map((r) => ({ owner: r.owner, name: r.name })));
-  const cutoff = Date.now() - maxAgeH * 3600 * 1000;
+  const now = Date.now();
   return repos.filter((r) => {
     const s = summaries.get(`${r.owner}/${r.name}`);
-    return !s?.scannedAt || new Date(s.scannedAt).getTime() < cutoff;
+    if (!s?.scannedAt) return true;
+    const ageMs = now - new Date(s.scannedAt).getTime();
+    return s.status === "complete" ? ageMs > maxAgeH * 3600 * 1000 : ageMs > 3600 * 1000;
   });
 }
 
-// Lance un scan complet, sauvegarde en DB et retourne le ScanResult
-export async function scanRepo(
-  token: string,
-  owner: string,
-  repo: string,
-  branch: string
-): Promise<ScanResult> {
-  const deps = await getDependencies(token, owner, repo, branch);
-  const scanned = await scanDependencies(deps);
+const STORED_VULN_SUMMARY_MAX = 300;
 
-  const components: ScannedComponent[] = scanned.map((c, i) => ({
+/**
+ * Scanne un dépôt et enregistre le résultat.
+ *  - échec (GitHub ou OSV injoignable) → ScanFailedError, rien n'est écrit ;
+ *  - partiel → n'écrase jamais un scan complet existant et n'alimente pas l'historique ;
+ *  - complet → mise à jour du scan + un point d'historique.
+ */
+export async function scanRepo(token: string, owner: string, repo: string, branch: string): Promise<ScanResult & { persisted: boolean }> {
+  const collected = await getDependencies(token, owner, repo, branch);
+  if (collected.status === "failed") {
+    throw new ScanFailedError(collected.warnings.join(" ; ") || "lecture du dépôt impossible");
+  }
+  const outcome = await scanDependencies(collected.deps);
+  if (outcome.status === "failed") {
+    throw new ScanFailedError(outcome.warnings.join(" ; ") || "analyse OSV impossible");
+  }
+
+  const status: ScanStatus = collected.status === "complete" && outcome.status === "complete" ? "complete" : "partial";
+  const warnings = [...collected.warnings, ...outcome.warnings];
+
+  // Licences (deps.dev) : un échec ne fait jamais échouer ni dégrader le scan de sécurité.
+  const found = await lookupLicenses(outcome.components).catch(() => ({ licenses: new Map<string, string>(), warning: undefined as string | undefined }));
+
+  const components: ScannedComponent[] = outcome.components.map((c) => ({
     name: c.name,
     version: c.version,
     ecosystem: c.ecosystem,
-    source: deps[i]?.source,
-    status: c.vulns.length > 0 ? "vulnerable" : "sain",
+    source: c.source,
+    scope: c.scope,
+    direct: c.direct,
+    license: found.licenses.get(licenseKey(c)),
+    resolved: c.resolved,
+    status: c.unscanned ? "non-analysé" : c.vulns.length > 0 ? "vulnerable" : "sain",
     topSeverity: topSeverity(c.vulns),
     vulnCount: c.vulns.length,
     vulns: c.vulns,
   }));
 
   const vulnerable = components.filter((c) => c.status === "vulnerable").length;
-  const riskScore = computeRiskScore(scanned);
+  const riskScore = computeRiskScore(outcome.components);
   const breakdown = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
   for (const c of components) {
     for (const v of c.vulns) {
@@ -184,61 +233,60 @@ export async function scanRepo(
     }
   }
 
-  // Persist en DB (upsert par owner+repo)
+  // Les CVE des composants vulnérables sont conservées : les pages détail lisent la base (aucun rescan à l'affichage).
   const storable = components.map((c) => ({
     name: c.name,
     version: c.version,
     ecosystem: c.ecosystem,
     source: c.source,
+    scope: c.scope,
+    direct: c.direct,
+    ...(c.license ? { license: c.license } : {}),
+    resolved: c.resolved,
     status: c.status,
     topSeverity: c.topSeverity,
     vulnCount: c.vulnCount,
+    ...(c.vulns.length > 0
+      ? { vulns: c.vulns.map((v) => ({ ...v, summary: v.summary.slice(0, STORED_VULN_SUMMARY_MAX) })) }
+      : {}),
   }));
 
-  try {
-    await db.repoScan.upsert({
-      where: { owner_repo: { owner, repo } },
-      create: {
-        owner,
-        repo,
-        branch,
-        total: components.length,
-        vulnerable,
-        critical: breakdown.CRITICAL,
-        high: breakdown.HIGH,
-        medium: breakdown.MEDIUM,
-        low: breakdown.LOW,
-        components: JSON.stringify(storable),
-      },
-      update: {
-        branch,
-        scannedAt: new Date(),
-        total: components.length,
-        vulnerable,
-        critical: breakdown.CRITICAL,
-        high: breakdown.HIGH,
-        medium: breakdown.MEDIUM,
-        low: breakdown.LOW,
-        components: JSON.stringify(storable),
-      },
-    });
-    // Historique : un snapshot par scan (jamais écrasé)
-    await db.scanHistory.create({
-      data: {
-        owner,
-        repo,
-        total: components.length,
-        vulnerable,
-        critical: breakdown.CRITICAL,
-        high: breakdown.HIGH,
-        medium: breakdown.MEDIUM,
-        low: breakdown.LOW,
-      },
-    });
+  const data = {
+    branch,
+    total: components.length,
+    vulnerable,
+    critical: breakdown.CRITICAL,
+    high: breakdown.HIGH,
+    medium: breakdown.MEDIUM,
+    low: breakdown.LOW,
+    components: JSON.stringify(storable),
+    status,
+    note: warnings.length > 0 ? warnings.join(" ; ").slice(0, 1000) : null,
+  };
 
-    console.log(`[scan] ${owner}/${repo}: ${components.length} deps, ${vulnerable} vuln (C:${breakdown.CRITICAL} H:${breakdown.HIGH} M:${breakdown.MEDIUM} L:${breakdown.LOW})`);
+  let persisted = false;
+  try {
+    const previous = await db.repoScan.findUnique({ where: { owner_repo: { owner, repo } }, select: { status: true } });
+    if (status === "partial" && previous?.status === "complete") {
+      console.warn(`[scan] ${owner}/${repo}: scan partiel — le dernier scan complet est conservé (${warnings.join(" ; ")})`);
+    } else {
+      await db.repoScan.upsert({
+        where: { owner_repo: { owner, repo } },
+        create: { owner, repo, ...data },
+        update: { ...data, scannedAt: new Date() },
+      });
+      persisted = true;
+      if (status === "complete") {
+        await db.scanHistory.create({
+          data: { owner, repo, total: data.total, vulnerable, critical: data.critical, high: data.high, medium: data.medium, low: data.low },
+        });
+      }
+    }
+    console.log(
+      `[scan] ${owner}/${repo}: ${status} — ${components.length} deps (${outcome.unscanned} non analysées), ${vulnerable} vuln (C:${breakdown.CRITICAL} H:${breakdown.HIGH} M:${breakdown.MEDIUM} L:${breakdown.LOW})${persisted ? "" : " [non enregistré]"}`
+    );
   } catch (err) {
-    console.error(`[scan] upsert FAILED — ${owner}/${repo}:`, err);
+    console.error(`[scan] écriture en base ÉCHOUÉE — ${owner}/${repo}:`, err);
     throw err;
   }
 
@@ -253,48 +301,55 @@ export async function scanRepo(
     vulnerable,
     components,
     severityBreakdown: breakdown,
+    status,
+    warnings,
+    unscanned: outcome.unscanned,
+    persisted,
   };
 }
 
-// Déclenche un scan depuis un bouton client (server action)
-export async function triggerScan(
-  token: string,
-  owner: string,
-  repo: string,
-  branch: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
+/** Dernier scan enregistré (aucun appel réseau) ; null si le dépôt n'a jamais été scanné. */
+export async function getStoredScan(owner: string, repo: string): Promise<ScanResult | null> {
+  const row = await db.repoScan.findUnique({ where: { owner_repo: { owner, repo } } });
+  if (!row) return null;
+
+  let parsed: Partial<ScannedComponent>[] = [];
   try {
-    await scanRepo(token, owner, repo, branch);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: String(e) };
+    parsed = JSON.parse(row.components) as Partial<ScannedComponent>[];
+  } catch {
+    parsed = [];
   }
-}
+  const components: ScannedComponent[] = parsed.map((c) => ({
+    name: String(c.name ?? ""),
+    version: String(c.version ?? ""),
+    ecosystem: (c.ecosystem ?? "npm") as Ecosystem,
+    source: c.source,
+    scope: c.scope,
+    direct: c.direct,
+    license: typeof c.license === "string" ? c.license : undefined,
+    resolved: c.resolved ?? true,
+    status: c.status === "non-analysé" ? "non-analysé" : (c.vulnCount ?? 0) > 0 ? "vulnerable" : "sain",
+    topSeverity: c.topSeverity ?? "UNKNOWN",
+    vulnCount: c.vulnCount ?? 0,
+    vulns: c.vulns ?? [],
+  }));
+  const legacy = components.some((c) => c.status === "vulnerable" && c.vulns.length === 0);
+  const riskScore = computeRiskScore(components.map((c) => ({ ...c, vulns: c.vulns })) as unknown as ComponentVuln[]);
 
-// Scanne tous les repos fournis en parallèle (max 5 simultanés)
-export async function scanAllRepos(
-  token: string,
-  repos: { owner: string; name: string; branch: string }[]
-): Promise<{ total: number; done: number; failed: number }> {
-  const CONCURRENCY = 5;
-  let done = 0;
-  let failed = 0;
-
-  for (let i = 0; i < repos.length; i += CONCURRENCY) {
-    const batch = repos.slice(i, i + CONCURRENCY);
-    const results = await Promise.allSettled(
-      batch.map((r) => scanRepo(token, r.owner, r.name, r.branch))
-    );
-    for (let j = 0; j < results.length; j++) {
-      const r = results[j];
-      if (r.status === "fulfilled") {
-        done++;
-      } else {
-        console.error(`[scan] scanAllRepos failed for ${batch[j].owner}/${batch[j].name}:`, r.reason);
-        failed++;
-      }
-    }
-  }
-
-  return { total: repos.length, done, failed };
+  return {
+    owner: row.owner,
+    repo: row.repo,
+    branch: row.branch,
+    scannedAt: row.scannedAt.toISOString(),
+    riskScore,
+    level: riskLevel(riskScore),
+    total: row.total,
+    vulnerable: row.vulnerable,
+    components,
+    severityBreakdown: { CRITICAL: row.critical, HIGH: row.high, MEDIUM: row.medium, LOW: row.low },
+    status: row.status === "partial" ? "partial" : "complete",
+    warnings: row.note ? row.note.split(" ; ") : [],
+    unscanned: components.filter((c) => c.status === "non-analysé").length,
+    legacy,
+  };
 }

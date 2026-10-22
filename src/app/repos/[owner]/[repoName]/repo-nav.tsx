@@ -10,6 +10,7 @@ export function RepoNav({ owner, repoName }: { owner: string; repoName: string }
 
   const tabs = [
     { href: base, label: "Overview", match: (p: string) => p === base },
+    { href: `${base}/issues`, label: "Issues", match: (p: string) => p.startsWith(`${base}/issues`) },
     { href: `${base}/inventory`, label: "Inventory", match: (p: string) => p.startsWith(`${base}/inventory`) },
   ];
 

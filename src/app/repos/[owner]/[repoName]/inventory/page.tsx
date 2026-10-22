@@ -1,106 +1,129 @@
-import { redirect } from "next/navigation";
 import Link from "next/link";
-import { auth } from "@/lib/auth";
-import { getOctokit } from "@/lib/github";
-import { scanRepo } from "@/lib/scan";
-import { SevCircle } from "@/components/app/severity-badge";
-import { IconPackage, IconShieldCheck } from "@tabler/icons-react";
+import { loadRepoScan } from "@/lib/repo-page";
+import type { ScannedComponent } from "@/lib/scan";
+import { ComponentsTable } from "@/components/app/components-table";
+import { versionsByName } from "@/lib/components-util";
+import { ScanStatusBanner } from "@/components/app/scan-status-banner";
+import { NeverScanned } from "@/components/app/never-scanned";
+import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-function manifestLabel(source?: string): string {
-  if (!source) return "—";
-  return source
-    .split(", ")
-    .map((path) => {
-      const trimmed = path.replace(/\/(package\.json|requirements\.txt)$/, "");
-      return trimmed || "racine";
-    })
-    .join(", ");
+const FILTERS = [
+  { id: "all", label: "Tous" },
+  { id: "vulnerable", label: "Vulnérables" },
+  { id: "direct", label: "Directs" },
+  { id: "prod", label: "Production" },
+  { id: "unscanned", label: "Non analysés" },
+] as const;
+type FilterId = (typeof FILTERS)[number]["id"];
+
+const MAX_ROWS = 500;
+const SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+
+function rank(c: ScannedComponent): number {
+  if (c.status === "vulnerable") return SEVERITY_ORDER.indexOf(c.topSeverity);
+  if (c.status === "non-analysé") return SEVERITY_ORDER.length;
+  return SEVERITY_ORDER.length + 1;
+}
+
+function matches(c: ScannedComponent, filter: FilterId): boolean {
+  switch (filter) {
+    case "vulnerable": return c.status === "vulnerable";
+    case "direct": return c.direct === true;
+    case "prod": return c.scope !== "dev";
+    case "unscanned": return c.status === "non-analysé";
+    default: return true;
+  }
 }
 
 export default async function InventoryPage({
   params,
-}: { params: Promise<{ owner: string; repoName: string }> }) {
+  searchParams,
+}: {
+  params: Promise<{ owner: string; repoName: string }>;
+  searchParams: Promise<{ q?: string; f?: string }>;
+}) {
   const { owner, repoName } = await params;
-  const session = await auth();
-  if (!session?.accessToken) redirect("/");
+  const { q = "", f = "all" } = await searchParams;
+  const filter: FilterId = FILTERS.some((x) => x.id === f) ? (f as FilterId) : "all";
 
-  const octokit = getOctokit(session.accessToken);
-  let branch = "main";
-  try {
-    const { data } = await octokit.repos.get({ owner, repo: repoName });
-    branch = data.default_branch;
-  } catch {}
+  const { scan } = await loadRepoScan(owner, repoName);
+  if (!scan) {
+    return (
+      <div className="px-6 py-5">
+        <NeverScanned owner={owner} repo={repoName} />
+      </div>
+    );
+  }
 
-  const scan = await scanRepo(session.accessToken, owner, repoName, branch);
-  const sorted = [...scan.components].sort((a, b) => {
-    const order = ["CRITICAL","HIGH","MEDIUM","LOW","UNKNOWN"];
-    const ai = a.vulnCount > 0 ? order.indexOf(a.topSeverity) : order.length;
-    const bi = b.vulnCount > 0 ? order.indexOf(b.topSeverity) : order.length;
-    return ai - bi;
-  });
+  const needle = q.trim().toLowerCase();
+  const filtered = scan.components
+    .filter((c) => matches(c, filter) && (!needle || c.name.toLowerCase().includes(needle)))
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const shown = filtered.slice(0, MAX_ROWS);
+
+  const href = (next: Partial<{ q: string; f: string }>) => {
+    const params = new URLSearchParams();
+    const nq = next.q ?? q;
+    const nf = next.f ?? filter;
+    if (nq) params.set("q", nq);
+    if (nf !== "all") params.set("f", nf);
+    const qs = params.toString();
+    return `/repos/${owner}/${repoName}/inventory${qs ? `?${qs}` : ""}`;
+  };
 
   return (
     <div className="flex flex-col flex-1">
+      {(scan.status === "partial" || scan.legacy) && (
+        <div className="px-6 pt-4">
+          <ScanStatusBanner scan={scan} />
+        </div>
+      )}
+
       <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-muted/20">
         <p className="text-[13px] text-muted-foreground">
           <span className="font-medium text-foreground">{scan.total}</span> composants ·{" "}
           <span className="font-medium text-red-600">{scan.vulnerable}</span> vulnérables
+          {scan.unscanned > 0 && <> · <span className="font-medium text-amber-700">{scan.unscanned}</span> non analysés</>}
         </p>
         <span className="text-[12px] text-muted-foreground">
           Scan du {new Date(scan.scannedAt).toLocaleDateString("fr-FR")}
         </span>
       </div>
 
-      <table className="w-full text-[13px]">
-        <thead>
-          <tr className="border-b border-border bg-muted/30">
-            <th className="text-left px-6 py-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Composant</th>
-            <th className="text-left px-4 py-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Version</th>
-            <th className="text-left px-4 py-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Source</th>
-            <th className="text-left px-4 py-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Écosystème</th>
-            <th className="text-left px-4 py-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Sévérité</th>
-            <th className="text-left px-4 py-2.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">CVEs</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {sorted.map((c) => (
-            <tr key={`${c.name}@${c.version}:${c.source ?? ""}`} className="hover:bg-muted/20 transition-colors">
-              <td className="px-6 py-2.5">
-                <div className="flex items-center gap-2">
-                  {c.vulnCount > 0
-                    ? <IconPackage size={13} className="text-muted-foreground shrink-0" />
-                    : <IconShieldCheck size={13} className="text-green-500 shrink-0" />
-                  }
-                  {c.vulnCount > 0 ? (
-                    <Link href={`/repos/${owner}/${repoName}/components/${c.name}`}
-                      className="font-mono text-xs font-medium hover:text-violet-600 transition-colors">
-                      {c.name}
-                    </Link>
-                  ) : (
-                    <span className="font-mono text-xs">{c.name}</span>
-                  )}
-                </div>
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{c.version}</td>
-              <td className="px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
-                {manifestLabel(c.source)}
-              </td>
-              <td className="px-4 py-2.5 text-xs text-muted-foreground capitalize">{c.ecosystem}</td>
-              <td className="px-4 py-2.5">
-                {c.vulnCount > 0
-                  ? <SevCircle severity={c.topSeverity} count={1} />
-                  : <span className="badge-ok text-[11px] rounded-full px-2 py-0.5">Sain</span>
-                }
-              </td>
-              <td className="px-4 py-2.5 text-xs text-muted-foreground tabular-nums">
-                {c.vulnCount > 0 ? c.vulnCount : "—"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="flex items-center gap-3 px-6 py-2.5 border-b border-border bg-white">
+        <form action={`/repos/${owner}/${repoName}/inventory`} className="flex items-center gap-2">
+          {filter !== "all" && <input type="hidden" name="f" value={filter} />}
+          <input
+            name="q"
+            defaultValue={q}
+            placeholder="Rechercher un composant…"
+            className="h-8 w-64 rounded-md border border-border bg-muted/40 px-3 text-[13px] outline-none focus:border-violet-400"
+          />
+        </form>
+        {FILTERS.map((x) => (
+          <Link
+            key={x.id}
+            href={href({ f: x.id })}
+            className={cn(
+              "text-[12px] px-2.5 py-1 rounded-md transition-colors",
+              filter === x.id ? "bg-violet-100 text-violet-700 font-medium" : "text-muted-foreground hover:bg-muted"
+            )}
+          >
+            {x.label}
+          </Link>
+        ))}
+        <span className="ml-auto text-[12px] text-muted-foreground tabular-nums">
+          {filtered.length > MAX_ROWS ? `${MAX_ROWS} affichés sur ${filtered.length}` : `${filtered.length} résultat(s)`}
+        </span>
+      </div>
+
+      <ComponentsTable owner={owner} repo={repoName} rows={shown} versionsByName={versionsByName(scan.components, shown)} variant="inventory" />
+
+      {shown.length === 0 && (
+        <div className="py-16 text-center text-sm text-muted-foreground">Aucun composant ne correspond à ce filtre.</div>
+      )}
     </div>
   );
 }
