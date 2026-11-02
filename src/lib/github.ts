@@ -1,4 +1,5 @@
 import "server-only";
+import { DEMO_LOGIN, DEMO_ORGS, DEMO_PRS, DEMO_REPOS, isDemo } from "./demo";
 import { Octokit } from "@octokit/rest";
 import {
   dedupeDeps, parseCargoLock, parseComposerLock, parseGemfileLock, parseGoMod, parsePackageJson,
@@ -61,6 +62,10 @@ export async function getRepoAccess(
   owner: string,
   repo: string
 ): Promise<{ defaultBranch: string; private: boolean } | null> {
+  if (isDemo()) {
+    const r = DEMO_REPOS.find((x) => x.owner === owner && x.name === repo);
+    return r ? { defaultBranch: r.default_branch, private: r.private } : null;
+  }
   try {
     const { data } = await getOctokit(token).repos.get({ owner, repo });
     return { defaultBranch: data.default_branch ?? "main", private: data.private };
@@ -72,6 +77,7 @@ export async function getRepoAccess(
 }
 
 export async function getGithubLogin(token: string): Promise<string> {
+  if (isDemo()) return DEMO_LOGIN;
   const octokit = getOctokit(token);
   const { data } = await octokit.users.getAuthenticated();
   return data.login;
@@ -143,12 +149,14 @@ function mapGithubRepo(r: {
 }
 
 export async function listOrgs(token: string): Promise<GithubOrg[]> {
+  if (isDemo()) return DEMO_ORGS;
   const octokit = getOctokit(token);
   const orgs = await octokit.paginate(octokit.orgs.listForAuthenticatedUser, { per_page: 100 });
   return orgs.map((o) => ({ id: o.id, login: o.login, avatar_url: o.avatar_url }));
 }
 
 export async function listRepos(token: string): Promise<GithubRepo[]> {
+  if (isDemo()) return DEMO_REPOS;
   const octokit = getOctokit(token);
   const byId = new Map<number, GithubRepo>();
   const add = (r: Parameters<typeof mapGithubRepo>[0]) => byId.set(r.id, mapGithubRepo(r));
@@ -206,6 +214,7 @@ export interface GithubPR {
 }
 
 export async function listPullRequests(token: string, username: string): Promise<GithubPR[]> {
+  if (isDemo()) return DEMO_PRS;
   const octokit = getOctokit(token);
   try {
     const { data } = await octokit.search.issuesAndPullRequests({

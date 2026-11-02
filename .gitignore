@@ -48,3 +48,4 @@ yarn-error.log*
 *.db-shm
 *.db-wal
 build/native-cache/
+demo/

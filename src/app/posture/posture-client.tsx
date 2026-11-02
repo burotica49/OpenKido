@@ -152,7 +152,7 @@ export function PostureClient({ repos, summaries }: { repos: GithubRepo[]; summa
       )}
 
       <HelpPanel>
-        <p>Chaque dépôt GitHub est vérifié sur 26 points de sécurité (protection de la branche principale, relecture du code, détection des secrets, workflows CI…). Cette page ne modifie rien : elle lit seulement les réglages.</p>
+        <p>Chaque dépôt GitHub est vérifié sur 27 points de sécurité (protection de la branche principale, relecture du code, détection des secrets, workflows CI…). Cette page ne modifie rien : elle lit seulement les réglages.</p>
         <p><Term>Score</Term> : de 0 à 100, la part des points respectés, les plus graves comptant davantage. Vert à partir de 75, orange de 50 à 74, rouge en dessous.</p>
         <p><Term>Échecs</Term> : les points non respectés, classés par gravité — <span className="font-semibold text-red-700">C</span> critique (urgent), <span className="font-semibold text-orange-700">H</span> élevée (rapide), <span className="font-semibold text-amber-700">M</span> moyenne (à planifier), <span className="font-semibold text-blue-700">L</span> faible (bonne pratique).</p>
         <p><Term>Non évaluables</Term> : points que l&apos;application n&apos;a pas pu vérifier (droits insuffisants, fonction indisponible). Ils sont ignorés dans le score.</p>

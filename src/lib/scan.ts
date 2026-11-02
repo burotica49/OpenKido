@@ -4,6 +4,7 @@ import { getDependencies } from "./github";
 import { scanDependencies, computeRiskScore, riskLevel, topSeverity, type ComponentVuln } from "./osv";
 import type { Ecosystem } from "./lockfiles";
 import { db } from "./db";
+import { isDemo } from "./demo";
 import { licenseKey, lookupLicenses } from "./licenses";
 
 export type ScanStatus = "complete" | "partial";
@@ -175,6 +176,7 @@ export async function getStaleRepos(
   repos: { owner: string; name: string; branch: string }[],
   maxAgeH = 24
 ): Promise<{ owner: string; name: string; branch: string }[]> {
+  if (isDemo()) return []; // mode démo : aucun scan automatique (données fictives)
   const summaries = await getRepoScanSummaries(repos.map((r) => ({ owner: r.owner, name: r.name })));
   const now = Date.now();
   return repos.filter((r) => {

@@ -14,7 +14,9 @@
 		"electron:template-db": "rm -f build/template.db && DATABASE_URL=file:./build/template.db prisma migrate deploy",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"demo:seed": "node --no-warnings scripts/seed-demo.ts",
+		"demo:screenshots": "node scripts/demo-screenshots.mjs"
 	},
 	"dependencies": {
 		"@auth/core": "^0.41.3",

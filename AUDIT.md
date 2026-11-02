@@ -287,7 +287,7 @@ Référence : mêmes règles que OpenSSF Scorecard (`Token-Permissions`, `Pinned
 - **Code Quality** : analyse sur l'arborescence git et le contenu de `package.json`/`pyproject.toml` (un `pyproject.toml` ne vaut plus lint + format + tests ; un workflow de déploiement ne vaut plus « CI + tests »).
 
 ### Moteur de contrôles de posture (nouveau, lecture seule)
-- 26 contrôles en 6 familles (branches et revues, fonctions de sécurité GitHub, GitHub Actions, secrets/fichiers sensibles, gouvernance/lockfiles, accès), page « Posture » avec détail par dépôt, preuves, éléments en cause et comment corriger.
+- 27 contrôles en 6 familles (branches et revues, fonctions de sécurité GitHub, GitHub Actions, secrets/fichiers sensibles, gouvernance/lockfiles, accès), page « Posture » avec détail par dépôt, preuves, éléments en cause et comment corriger.
 - **Tri-état** : conforme / échec / à examiner / **non évaluable** (jamais compté comme réussi, exclu du score, couverture affichée) / sans objet. Un contrôle dépendant d'un échec racine (ex. protection de branche impossible) est « sans objet » : pas de double comptage.
 - Validé sur de vrais dépôts et comparé à OpenSSF Scorecard (`express` : Code-Review, Token-Permissions, Dependency-Update-Tool, Binary-Artifacts, Dangerous-Workflow, License concordants). Deux écarts trouvés et corrigés grâce à cette comparaison : politique de sécurité héritée du dépôt `.github` de l'organisation, et SAST visible dans les workflows quand le jeton ne peut pas lire le code scanning.
 

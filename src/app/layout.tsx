@@ -11,6 +11,7 @@ import { revokeGithubSession } from "@/lib/logout";
 import { Sidebar } from "@/components/app/sidebar";
 import { AuthSessionProvider } from "@/components/app/session-provider";
 import { AutoScan } from "@/components/app/auto-scan";
+import { isDemo } from "@/lib/demo";
 import pkg from "../../package.json";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -68,7 +69,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   version={pkg.version}
                 />
               )}
-              <div className="flex-1 min-w-0 flex flex-col">{children}</div>
+              <div className="flex-1 min-w-0 flex flex-col">
+                {isDemo() && (
+                  <div className="bg-amber-100 text-amber-900 text-[11px] text-center py-1 print:hidden">
+                    Mode démo : toutes les données affichées sont fictives.
+                  </div>
+                )}
+                {children}
+              </div>
               {session?.user && staleRepos.length > 0 && <AutoScan staleRepos={staleRepos} />}
             </div>
           </TooltipProvider>

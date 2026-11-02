@@ -4,8 +4,10 @@ import { auth } from "@/lib/auth";
 import { TopBar, PageHeader } from "@/components/app/sidebar";
 import { buttonVariants } from "@/components/ui/button";
 import { SignOutButton } from "@/components/app/sign-out-button";
-import { IconLogout } from "@tabler/icons-react";
+import { IconBrandGithub, IconBook2, IconExternalLink, IconLogout } from "@tabler/icons-react";
+import pkg from "../../../package.json";
 import { getSelectedOrg } from "@/lib/selected-org";
+import { isDemo } from "@/lib/demo";
 import path from "path";
 import { pathToFileURL } from "url";
 
@@ -19,7 +21,9 @@ export default async function SettingsPage() {
   const dbUrl =
     process.env.DATABASE_URL ??
     pathToFileURL(path.join(process.cwd(), "prisma", "openkido.db")).href;
-  const dbLabel = dbUrl.startsWith("file:")
+  const dbLabel = isDemo()
+    ? "base de démonstration (données fictives)"
+    : dbUrl.startsWith("file:")
     ? decodeURIComponent(dbUrl.replace(/^file:\/\//, "").replace(/^file:/, ""))
     : dbUrl;
   const filterLabel =
@@ -74,6 +78,35 @@ export default async function SettingsPage() {
               {process.env.PORT !== "3000" && " (le port 3000 était occupé)"}
             </p>
           )}
+        </div>
+
+        <div className="rounded-lg border border-border bg-white px-5 py-4 space-y-3">
+          <p className="text-[11px] text-muted-foreground uppercase tracking-wider">À propos</p>
+          <p className="text-xs text-muted-foreground">
+            OpenKido <span className="font-mono text-foreground">v{pkg.version}</span> — audit de sécurité de vos dépôts GitHub et de vos domaines.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <a
+              href="https://github.com/burotica49/Openkido"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              <IconBrandGithub />
+              Dépôt GitHub
+              <IconExternalLink className="opacity-50" />
+            </a>
+            <a
+              href="https://github.com/burotica49/Openkido#readme"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              <IconBook2 />
+              Documentation
+              <IconExternalLink className="opacity-50" />
+            </a>
+          </div>
         </div>
 
         <SignOutButton className={buttonVariants({ variant: "outline", size: "sm" })}>
