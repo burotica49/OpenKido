@@ -42,7 +42,7 @@
 		"@types/react": "^19",
 		"@types/react-dom": "^19",
 		"concurrently": "^10.0.3",
-		"electron": "^43.8.3",
+		"electron": "^45.1.0",
 		"electron-builder": "^26.15.3",
 		"eslint": "^9",
 		"eslint-config-next": "16.4.2",
