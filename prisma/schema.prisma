@@ -155,6 +155,10 @@ model Domain {
   hasXFrame   Boolean?
   hasXContent Boolean?
   hasRp       Boolean?   // Referrer-Policy
+
+  // Analyse Sucuri SiteCheck (lancée à la demande) : JSON normalisé (SitecheckResult) et date.
+  sucuri      String?
+  sucuriAt    DateTime?
 }
 
 model UserPref {

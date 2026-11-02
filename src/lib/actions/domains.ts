@@ -3,6 +3,7 @@
 import { db } from "@/lib/db";
 import { requireSession } from "@/lib/session";
 import { checkDomain } from "@/lib/domain-check";
+import { analyzeAndStoreSitecheck, SitecheckError } from "@/lib/sucuri";
 import { UnsafeTargetError, normalizeHostname, resolvePublicTarget } from "@/lib/net-guard";
 
 export type DomainActionResult = { ok: true } | { ok: false; error: string };
@@ -35,6 +36,22 @@ export async function recheckDomain(domain: string): Promise<DomainActionResult>
     await checkDomain(normalizeHostname(domain));
     return { ok: true };
   } catch (error) {
+    return toError(error);
+  }
+}
+
+/** Analyse approfondie par Sucuri SiteCheck (service tiers) — lancée à la demande uniquement. */
+export async function analyzeDomainSucuri(domain: string): Promise<DomainActionResult> {
+  await requireSession();
+  try {
+    const hostname = normalizeHostname(domain);
+    await resolvePublicTarget(hostname);
+    const known = await db.domain.findUnique({ where: { domain: hostname }, select: { id: true } });
+    if (!known) return { ok: false, error: "Domaine inconnu : ajoutez-le d'abord" };
+    await analyzeAndStoreSitecheck(hostname);
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof SitecheckError) return { ok: false, error: error.message };
     return toError(error);
   }
 }

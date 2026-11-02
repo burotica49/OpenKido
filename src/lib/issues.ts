@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "./db";
+import { parseStoredSitecheck } from "./sucuri";
 import {
   applyStates, buildIssues, effectiveHistory, planHistorySync, planIsEmpty, recentResolved, sortIssues,
   type AuditAlertInput, type HistoryPlan, type HistoryRow, type IssueState, type IssueStatus, type PostureInput, type ResolvedIssue, type ResolvedItem,
@@ -90,7 +91,8 @@ async function buildFeed(githubLogin: string, repos: { owner: string; name: stri
 
   const secrets = secretRows.map((r): SecretsInput => ({ owner: r.owner, repo: r.repo, findings: parseJson<SecretsInput["findings"]>(r.findings, []) }));
 
-  const built = buildIssues({ scans, audits, postures, secrets, domains: domainRows });
+  const domains = domainRows.map((d) => ({ ...d, sucuri: parseStoredSitecheck(d.sucuri) }));
+  const built = buildIssues({ scans, audits, postures, secrets, domains });
   // Périmètre analysé : une alerte n'est « résolue » que si son dépôt ou domaine a bien été chargé ici.
   const scope = new Set<string>([...repos.map((r) => `${r.owner}/${r.name}`), ...domainRows.map((d) => d.domain)]);
   const now = new Date();

@@ -313,3 +313,41 @@ describe("historique : nouvelles et résolues", () => {
     expect(planHistorySync([row(issues[0])], alerts, scope, now).create).toHaveLength(0);
   });
 });
+
+describe("Sucuri SiteCheck dans le Feed", () => {
+  const sucuri = {
+    scannedAt: "2026-10-23T07:23:49Z",
+    ratings: { total: "C" }, passed: {}, site: { ips: [], hosting: [], server: [], poweredBy: [] }, cms: [], language: [], tls: {},
+    outdated: [{ name: "PHP", version: "7.2", safeVersion: "7.2.31" }],
+    recommendations: [
+      { id: "csp", area: "headers", level: "minor" as const, title: "CSP" },
+      { id: "needs_waf", area: "security", level: "minor" as const, title: "Aucun pare-feu applicatif (WAF) détecté" },
+      { id: "leaked_php_version", area: "headers", level: "minor" as const, title: "Version de PHP divulguée" },
+      { id: "no_stapled_ocsp", area: "tls", level: "minor" as const, title: "OCSP" },
+      { id: "some_tls_problem", area: "tls", level: "major" as const, title: "Problème TLS majeur" },
+      { id: "no_redirect_to_https", area: "tls", level: "major" as const, title: "Pas de redirection HTTPS" },
+    ],
+    alerts: [{ kind: "malware" as const, title: "Injected spam" }],
+  };
+  const out = buildIssues(sources({ domains: [domain({ sucuri })] }));
+  const byId = (suffix: string) => out.find((i) => i.key.endsWith(suffix));
+
+  it("logiciel obsolète, malware, WAF et fuite de version remontent", () => {
+    expect(byId("sucuri-outdated-php")).toMatchObject({ severity: "high", kind: "domain" });
+    expect(out.find((i) => i.key.includes("sucuri-alert-0"))).toMatchObject({ severity: "critical" });
+    expect(byId("sucuri-needs_waf")?.severity).toBe("low");
+    expect(byId("sucuri-leaked_php_version")?.severity).toBe("low");
+    expect(byId("sucuri-some_tls_problem")?.severity).toBe("medium");
+  });
+  it("pas de doublon avec nos propres contrôles, ni de bruit mineur", () => {
+    expect(byId("sucuri-csp")).toBeUndefined();
+    expect(byId("sucuri-no_redirect_to_https")).toBeUndefined();
+    expect(byId("sucuri-no_stapled_ocsp")).toBeUndefined();
+  });
+  it("les empreintes sont valides", () => {
+    for (const i of out) expect(isValidIssueKey(i.key), i.key).toBe(true);
+  });
+  it("sans analyse Sucuri, rien n'est ajouté", () => {
+    expect(buildIssues(sources({ domains: [domain()] }))).toHaveLength(0);
+  });
+});

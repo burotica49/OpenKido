@@ -8,7 +8,8 @@ import {
   IconLock, IconLockOpen, IconAlertTriangle,
   IconCheck, IconX, IconExternalLink,
 } from "@tabler/icons-react";
-import { addDomain, deleteDomain, recheckDomain } from "@/lib/actions/domains";
+import { addDomain, analyzeDomainSucuri, deleteDomain, recheckDomain } from "@/lib/actions/domains";
+import type { SitecheckResult } from "@/lib/sucuri-core";
 import type { DomainModel as Domain } from "@/generated/prisma/models/Domain";
 import { HelpPanel, Term } from "@/components/app/help-panel";
 import { DetailDrawer, DrawerSection } from "@/components/app/detail-drawer";
@@ -95,6 +96,124 @@ function DomainActions({ domain, onDone, always = false }: { domain: string; onD
   );
 }
 
+// ─── Analyse Sucuri SiteCheck ─────────────────────────────────────────
+
+function parseSucuri(raw: string | null): SitecheckResult | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as SitecheckResult;
+  } catch {
+    return null;
+  }
+}
+
+const RATING_CLS: Record<string, string> = {
+  A: "bg-green-100 text-green-700", B: "bg-lime-100 text-lime-700", C: "bg-amber-100 text-amber-700",
+  D: "bg-orange-100 text-orange-700", E: "bg-red-100 text-red-700", F: "bg-red-100 text-red-700",
+};
+function Rating({ value, label }: { value?: string; label?: string }) {
+  if (!value) return <span className="text-muted-foreground text-[12px]">—</span>;
+  return (
+    <span title={label} className={cn("inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-[12px] font-bold", RATING_CLS[value[0]] ?? "bg-muted text-muted-foreground")}>
+      {value}
+    </span>
+  );
+}
+
+function SucuriPanel({ domain, raw, at, onDone }: { domain: string; raw: string | null; at: Date | string | null; onDone: () => void }) {
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const r = parseSucuri(raw);
+  const run = () => {
+    setError(null);
+    start(async () => {
+      const res = await analyzeDomainSucuri(domain);
+      if (!res.ok) setError(res.error);
+      onDone();
+    });
+  };
+
+  return (
+    <div className="space-y-3">
+      {r ? (
+        <>
+          <div className="grid grid-cols-4 gap-2">
+            {([["Global", r.ratings.total], ["Sécurité", r.ratings.security], ["Domaine", r.ratings.domain], ["TLS", r.ratings.tls]] as const).map(([label, v]) => (
+              <div key={label} className="rounded-md border border-border px-2 py-2 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{label}</p>
+                <Rating value={v} label={`${label} : ${v ?? "non noté"}`} />
+              </div>
+            ))}
+          </div>
+
+          {r.alerts.length > 0 ? (
+            <ul className="rounded-md border border-red-200 bg-red-50 divide-y divide-red-100">
+              {r.alerts.map((a, i) => (
+                <li key={i} className="px-3 py-2 text-[12px] text-red-900"><span className="font-medium">{a.kind === "malware" ? "Malware : " : a.kind === "blacklist" ? "Liste noire : " : ""}{a.title}</span>{a.details ? <span className="block text-red-800/80 break-all">{a.details}</span> : null}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="rounded-md bg-green-50 px-3 py-2 text-[12px] text-green-800 flex items-center gap-2"><IconShieldCheck size={14} />Sucuri ne signale aucun malware ni aucune liste noire.</p>
+          )}
+
+          <ul className="rounded-md border border-border divide-y divide-border text-[12px]">
+            {r.site.hosting.length > 0 && <li className="px-3 py-2 flex gap-2"><span className="w-28 shrink-0 text-muted-foreground">Hébergeur</span>{r.site.hosting.join(", ")}</li>}
+            {r.site.ips.length > 0 && <li className="px-3 py-2 flex gap-2"><span className="w-28 shrink-0 text-muted-foreground">Adresse IP</span><span className="font-mono">{r.site.ips.join(", ")}</span></li>}
+            {r.site.server.length > 0 && <li className="px-3 py-2 flex gap-2"><span className="w-28 shrink-0 text-muted-foreground">Serveur</span>{r.site.server.join(", ")}</li>}
+            {r.site.poweredBy.length > 0 && <li className="px-3 py-2 flex gap-2"><span className="w-28 shrink-0 text-muted-foreground">Propulsé par</span>{r.site.poweredBy.join(", ")}</li>}
+            {r.cms.length > 0 && <li className="px-3 py-2 flex gap-2"><span className="w-28 shrink-0 text-muted-foreground">CMS</span>{r.cms.map((c) => `${c.name}${c.version ? ` ${c.version}` : ""}`).join(", ")}</li>}
+            {r.tls.issuer && <li className="px-3 py-2 flex gap-2"><span className="w-28 shrink-0 text-muted-foreground">Certificat</span>{r.tls.issuer}{r.tls.expires ? ` · expire le ${r.tls.expires}` : ""}</li>}
+          </ul>
+
+          {r.outdated.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-900 space-y-1">
+              <p className="font-medium">Logiciel obsolète détecté</p>
+              {r.outdated.map((o) => (
+                <p key={o.name}>
+                  {o.name} {o.version ?? ""}{o.safeVersion ? ` → au moins ${o.safeVersion}` : ""}
+                  {o.url && <> · <a href={o.url} target="_blank" rel="noopener noreferrer" className="underline">notes de version</a></>}
+                </p>
+              ))}
+              <p className="text-amber-800/80">Sans mise à jour, des failles connues restent exploitables.</p>
+            </div>
+          )}
+
+          {r.recommendations.length > 0 && (
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">Recommandations de durcissement</p>
+              <ul className="rounded-md border border-border divide-y divide-border">
+                {r.recommendations.map((rec) => (
+                  <li key={rec.id} className="px-3 py-2 text-[12px] flex items-start gap-2">
+                    <span className={cn("mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold", rec.level === "major" ? "bg-orange-100 text-orange-700" : "bg-muted text-muted-foreground")}>{rec.level === "major" ? "Importante" : "Mineure"}</span>
+                    <span>{rec.title}{rec.details ? <span className="block text-muted-foreground break-words">{rec.details}</span> : null}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Analyse du {at ? new Date(at).toLocaleDateString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "—"} ·{" "}
+            <a href={`https://sitecheck.sucuri.net/results/${encodeURIComponent(domain)}`} target="_blank" rel="noopener noreferrer" className="underline">rapport complet sur Sucuri</a>
+          </p>
+        </>
+      ) : (
+        <p className="text-[12px] text-muted-foreground">Pas encore analysé. L&apos;analyse recherche malware, listes noires, logiciels obsolètes (CMS, PHP) et défauts de durcissement.</p>
+      )}
+
+      <button
+        onClick={run}
+        disabled={pending}
+        className="inline-flex items-center gap-1.5 rounded-md border border-violet-200 px-3 py-1.5 text-[12px] font-medium text-violet-600 hover:bg-violet-50 transition-colors disabled:opacity-60"
+      >
+        {pending ? <IconLoader2 size={13} className="animate-spin" /> : <IconRefresh size={13} />}
+        {pending ? "Analyse en cours…" : r ? "Relancer l'analyse Sucuri" : "Lancer l'analyse Sucuri"}
+      </button>
+      {error && <p className="text-[12px] text-red-600">{error}</p>}
+      <p className="text-[11px] text-muted-foreground">Service tiers : le nom de domaine est transmis à Sucuri SiteCheck (sitecheck.sucuri.net), qui analyse le site depuis ses propres serveurs.</p>
+    </div>
+  );
+}
+
 // ─── Formulaire d'ajout ───────────────────────────────────────────────
 
 function AddDomainForm({ onDone }: { onDone: () => void }) {
@@ -164,6 +283,7 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
         <p>Pour chaque nom de domaine ajouté, l&apos;application vérifie, à chaque vérification lancée, que le site est joignable et bien configuré côté sécurité.</p>
         <p><Term>Certificat SSL</Term> : ce qui permet le cadenas HTTPS. Un certificat expiré affiche un avertissement à vos visiteurs ; la page indique le nombre de jours restants.</p>
         <p><Term>En-têtes de sécurité</Term> (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy) : consignes envoyées au navigateur pour limiter les attaques courantes (détournement de page, injection de scripts…). Plus il y en a, mieux le site est protégé.</p>
+        <p><Term>Analyse Sucuri</Term> : dans le détail d&apos;un domaine, vous pouvez lancer une analyse approfondie par le service gratuit Sucuri SiteCheck : malware, listes noires, CMS et PHP obsolètes, défauts de durcissement, avec une note de A à F. Elle n&apos;est lancée que sur demande : le nom de domaine est alors transmis à Sucuri. Les problèmes trouvés remontent aussi dans la page Issues.</p>
         <p><Term>Statuts</Term> : <Term>Sain</Term> = tout est en ordre ; <Term>Attention</Term> = certificat bientôt expiré ou en-têtes manquants ; <Term>Critique</Term> = certificat invalide/expiré ou site injoignable ; <Term>Non vérifié</Term> = pas encore testé.</p>
       </HelpPanel>
 
@@ -203,6 +323,7 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
                 <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-[12px]">Domaine</th>
                 <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-[12px]">HTTP</th>
                 <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-[12px]">SSL</th>
+                <th className="text-center px-3 py-2.5 font-medium text-muted-foreground text-[12px]" title="Note globale de l'analyse Sucuri SiteCheck (A à F)">Sucuri</th>
                 <th className="text-center px-3 py-2.5 font-medium text-muted-foreground text-[12px]">HSTS</th>
                 <th className="text-center px-3 py-2.5 font-medium text-muted-foreground text-[12px]">CSP</th>
                 <th className="text-center px-3 py-2.5 font-medium text-muted-foreground text-[12px]">X-Frame</th>
@@ -248,6 +369,7 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
                       </div>
                     </td>
                     <td className="px-4 py-3">{sslBadge(d)}</td>
+                    <td className="px-3 py-3 text-center"><Rating value={parseSucuri(d.sucuri)?.ratings.total} label="Note globale Sucuri" /></td>
                     <td className="px-3 py-3 text-center"><BoolIcon value={d.hasHsts} /></td>
                     <td className="px-3 py-3 text-center"><BoolIcon value={d.hasCsp} /></td>
                     <td className="px-3 py-3 text-center"><BoolIcon value={d.hasXFrame} /></td>
@@ -313,6 +435,9 @@ export function DomainsClient({ domains: initial }: { domains: Domain[] }) {
                   </li>
                 ))}
               </ul>
+            </DrawerSection>
+            <DrawerSection title="Analyse Sucuri SiteCheck">
+              <SucuriPanel domain={d.domain} raw={d.sucuri} at={d.sucuriAt} onDone={refresh} />
             </DrawerSection>
           </DetailDrawer>
         );

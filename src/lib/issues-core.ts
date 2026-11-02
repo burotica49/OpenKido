@@ -3,6 +3,7 @@
 // Module pur (aucun accès réseau ni base) : importable côté client pour les types et testable.
 
 import { classifyLicense } from "./licenses-core";
+import type { SitecheckResult } from "./sucuri-core";
 
 export type IssueSeverity = "critical" | "high" | "medium" | "low";
 export type IssueKind = "dependency" | "malware" | "license" | "code-scanning" | "dependabot" | "secret" | "posture" | "domain";
@@ -182,6 +183,8 @@ export interface DomainInput {
   hasXFrame: boolean | null;
   hasXContent: boolean | null;
   hasRp: boolean | null;
+  /** Dernière analyse Sucuri SiteCheck (lancée à la demande), si elle existe. */
+  sucuri?: SitecheckResult | null;
 }
 
 export interface IssueSources {
@@ -379,6 +382,32 @@ function domainIssues(d: DomainInput): Issue[] {
   const missing = headers.filter(([v]) => v === false).map(([, n]) => n);
   if (missing.length > 0) {
     out.push(mk("headers", missing.length >= 3 ? "medium" : "low", `${missing.length} en-tête(s) de sécurité manquant(s)`, missing.join(", "), "Ajouter ces en-têtes dans la configuration du serveur web."));
+  }
+  out.push(...sucuriIssues(d, mk));
+  return out;
+}
+
+// Contrôles de Sucuri déjà couverts par nos propres vérifications d'en-têtes et de HTTPS : pas de doublon.
+const SUCURI_COVERED = new Set(["csp", "no_csp", "x_frame_options", "x_content_type_options", "strict_transport_security", "referrer_policy", "no_redirect_to_https"]);
+
+const MINOR_SUCURI_SEVERITY: Record<string, IssueSeverity> = { leaked_php_version: "low", needs_waf: "low" };
+
+function sucuriIssues(d: DomainInput, mk: (id: string, severity: IssueSeverity, title: string, detail: string, fix?: string) => Issue): Issue[] {
+  const sc = d.sucuri;
+  if (!sc) return [];
+  const slug = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "x";
+  const out: Issue[] = [];
+  sc.alerts.forEach((a, i) => {
+    out.push(mk(`sucuri-alert-${i}-${slug(a.title)}`, a.kind === "other" ? "medium" : "critical", `Sucuri : ${a.title}`, a.details ?? "Avertissement remonté par Sucuri SiteCheck.", "Consulter le rapport Sucuri et nettoyer le site (ou demander une aide spécialisée)."));
+  });
+  for (const o of sc.outdated) {
+    out.push(mk(`sucuri-outdated-${slug(o.name)}`, "high", `${o.name} obsolète${o.version ? ` (${o.version})` : ""}`, `Sucuri détecte une version de ${o.name} qui ne reçoit plus toutes les mises à jour de sécurité.`, `Mettre à jour ${o.name}${o.safeVersion ? ` vers ${o.safeVersion} ou plus récent` : ""}.`));
+  }
+  for (const r of sc.recommendations) {
+    if (SUCURI_COVERED.has(r.id)) continue;
+    const severity: IssueSeverity | undefined = r.level === "major" ? "medium" : MINOR_SUCURI_SEVERITY[r.id];
+    if (!severity) continue;
+    out.push(mk(`sucuri-${r.id}`, severity, r.title, "Recommandation de Sucuri SiteCheck.", r.details));
   }
   return out;
 }
