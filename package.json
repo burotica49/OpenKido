@@ -44,7 +44,7 @@
 		"concurrently": "^10.0.3",
 		"electron": "^43.8.3",
 		"electron-builder": "^26.15.3",
-		"eslint": "^9",
+		"eslint": "^10",
 		"eslint-config-next": "16.4.2",
 		"prisma": "^7.10.1",
 		"shadcn": "^4.22.1",
