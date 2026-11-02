@@ -55,7 +55,7 @@
 	},
 	"main": "dist/electron/main.js",
 	"description": "Sécurité applicative pour développeurs — SCA, SAST, conformité",
-	"license": "AGPL-3.0-only",
+	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/burotica49/OpenKido.git"

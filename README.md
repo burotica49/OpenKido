@@ -7,7 +7,7 @@
 Dépendances vulnérables, paquets malveillants, secrets oubliés dans le code, mauvaises configurations GitHub, licences à risque, certificats SSL : OpenKido réunit tout dans une liste unique, triée par gravité, avec la façon de corriger chaque problème.
 
 [![CI](https://github.com/burotica49/OpenKido/actions/workflows/ci.yml/badge.svg)](https://github.com/burotica49/OpenKido/actions/workflows/ci.yml)
-[![Licence : AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue.svg)](LICENSE)
+[![Licence : Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
 ![Le Feed Issues d'OpenKido](docs/screenshots/issues.png)
 
@@ -344,8 +344,8 @@ Pour signaler une faille de sécurité, n'ouvrez pas d'issue : suivez [SECURITY.
 
 ## Licence
 
-OpenKido est distribué sous licence **[GNU Affero General Public License v3.0](LICENSE)** (AGPL-3.0-only) — Copyright © 2026 Burotica.
+OpenKido est distribué sous licence **[Apache-2.0](LICENSE)** — Copyright © 2026 Burotica (voir aussi [NOTICE](NOTICE)).
 
-En pratique : vous pouvez utiliser, étudier, modifier et redistribuer OpenKido librement. Si vous proposez une version **modifiée** à des utilisateurs, y compris sous forme de service en ligne, vous devez leur donner accès au code source de vos modifications, sous la même licence.
+En pratique : vous pouvez utiliser, modifier et redistribuer OpenKido librement, y compris dans un produit commercial ou fermé, à condition de conserver la licence et les mentions de copyright. La licence inclut une concession de brevets de la part des contributeurs.
 
 Les services tiers interrogés par l'application (GitHub, OSV.dev, deps.dev, Sucuri SiteCheck) restent soumis à leurs propres conditions d'utilisation.
