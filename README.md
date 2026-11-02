@@ -172,7 +172,7 @@ docker run -d --name openkido -p 3000:3000 -v openkido-data:/data \
   openkido
 ```
 
-Sur **Dokploy**, créez une application à partir du dépôt (build `Dockerfile`), déclarez les variables d'environnement ci-dessus, ajoutez un volume persistant monté sur `/data` et exposez le port 3000 derrière HTTPS. Les migrations de base de données s'appliquent automatiquement au démarrage.
+Sur **Dokploy**, créez une application à partir du dépôt (build `Dockerfile`), déclarez les variables d'environnement ci-dessus, ajoutez un volume persistant monté sur `/data` (le dossier, pas le fichier `.db`) et exposez le port 3000 derrière HTTPS. Au démarrage, l'image rend `/data` accessible à l'utilisateur du conteneur, puis applique les migrations.
 
 > **Important :** sans `ALLOWED_GITHUB_LOGINS` et/ou `ALLOWED_GITHUB_ORGS`, n'importe quel compte GitHub peut se connecter à votre instance.
 

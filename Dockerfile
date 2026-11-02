@@ -25,7 +25,8 @@ RUN npx next build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
-RUN addgroup -S nodejs && adduser -S nextjs -G nodejs
+RUN apk add --no-cache su-exec \
+  && addgroup -S nodejs && adduser -S nextjs -G nodejs
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -47,15 +48,19 @@ COPY --from=builder /app/src/generated ./src/generated
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/node_modules/@libsql ./node_modules/@libsql
 
-# Répertoire de la base SQLite (à monter en volume persistant)
+# Répertoire de la base SQLite (à monter en volume persistant).
+# L'entrypoint (root) en donne la propriété à nextjs, puis abandonne les privilèges :
+# un volume Dokploy est créé root:root et écrase le chown fait ici à la construction.
 RUN mkdir -p /data && chown nextjs:nodejs /data
 VOLUME ["/data"]
 
-USER nextjs
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q --spider http://127.0.0.1:3000/ || exit 1
+  CMD node -e "fetch('http://127.0.0.1:3000/').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "server.js"]
