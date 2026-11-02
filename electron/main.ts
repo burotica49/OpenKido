@@ -363,10 +363,15 @@ app.whenReady().then(async () => {
   });
 });
 
+// Fermer la fenêtre quitte l'application (y compris sous macOS) : sinon l'icône reste dans le Dock
+// et le serveur local continue de tourner pour rien.
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  app.quit();
 });
 
-app.on("before-quit", () => {
+function stopServer() {
   nextServer?.kill();
-});
+  nextServer = null;
+}
+app.on("before-quit", stopServer);
+app.on("will-quit", stopServer);
