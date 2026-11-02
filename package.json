@@ -55,6 +55,15 @@
 	},
 	"main": "dist/electron/main.js",
 	"description": "Sécurité applicative pour développeurs — SCA, SAST, conformité",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/burotica49/OpenKido.git"
+	},
+	"homepage": "https://github.com/burotica49/OpenKido#readme",
+	"bugs": {
+		"url": "https://github.com/burotica49/OpenKido/issues"
+	},
 	"author": {
 		"name": "Burotica",
 		"email": "a.roy@burotica.fr"

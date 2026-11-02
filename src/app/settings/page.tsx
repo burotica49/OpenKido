@@ -87,7 +87,7 @@ export default async function SettingsPage() {
           </p>
           <div className="flex items-center gap-2 flex-wrap">
             <a
-              href="https://github.com/burotica49/Openkido"
+              href="https://github.com/burotica49/OpenKido"
               target="_blank"
               rel="noopener noreferrer"
               className={buttonVariants({ variant: "outline", size: "sm" })}
@@ -97,7 +97,7 @@ export default async function SettingsPage() {
               <IconExternalLink className="opacity-50" />
             </a>
             <a
-              href="https://github.com/burotica49/Openkido#readme"
+              href="https://github.com/burotica49/OpenKido#readme"
               target="_blank"
               rel="noopener noreferrer"
               className={buttonVariants({ variant: "outline", size: "sm" })}

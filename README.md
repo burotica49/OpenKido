@@ -6,7 +6,8 @@
 
 Dépendances vulnérables, paquets malveillants, secrets oubliés dans le code, mauvaises configurations GitHub, licences à risque, certificats SSL : OpenKido réunit tout dans une liste unique, triée par gravité, avec la façon de corriger chaque problème.
 
-[![CI](https://github.com/burotica49/Openkido/actions/workflows/ci.yml/badge.svg)](https://github.com/burotica49/Openkido/actions/workflows/ci.yml)
+[![CI](https://github.com/burotica49/OpenKido/actions/workflows/ci.yml/badge.svg)](https://github.com/burotica49/OpenKido/actions/workflows/ci.yml)
+[![Licence : AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue.svg)](LICENSE)
 
 ![Le Feed Issues d'OpenKido](docs/screenshots/issues.png)
 
@@ -28,6 +29,8 @@ Dépendances vulnérables, paquets malveillants, secrets oubliés dans le code, 
 - [Architecture](#architecture)
 - [Développement](#développement)
 - [Documentation complémentaire](#documentation-complémentaire)
+- [Contribuer](#contribuer)
+- [Licence](#licence)
 
 ---
 
@@ -144,7 +147,7 @@ L'application embarque son propre serveur local ; rien à installer à côté. L
 Prérequis : macOS, Node.js 22 ou plus récent, et un fichier `.env.local` renseigné (voir [Configuration](#configuration)).
 
 ```bash
-git clone https://github.com/burotica49/Openkido.git
+git clone https://github.com/burotica49/OpenKido.git
 cd Openkido
 npm install
 cp .env.local.example .env.local   # puis renseignez les valeurs
@@ -255,7 +258,6 @@ Pour signaler une vulnérabilité, suivez [SECURITY.md](SECURITY.md) (n'ouvrez p
 - **Précision des vulnérabilités** : OpenKido signale les composants concernés par une faille connue, sans analyser si le code vulnérable est réellement appelé.
 - **Sucuri SiteCheck** repose sur une API publique non documentée officiellement et peut limiter le nombre d'analyses.
 - **Application de bureau** : macOS uniquement, non notarisée, et le secret OAuth est embarqué dans l'installeur (usage interne).
-- **Pas de licence open source** définie pour l'instant : sauf accord de l'auteur, tous droits réservés.
 
 ---
 
@@ -325,3 +327,25 @@ Si Chrome n'est pas à l'emplacement habituel, indiquez-le avec `CHROME_PATH`. N
 
 - [SECURITY.md](SECURITY.md) — signalement d'une vulnérabilité et réglages obligatoires du déploiement web.
 - [AUDIT.md](AUDIT.md) — audit interne de sécurité et de fonctionnalités (état au 21 octobre 2026 ; plusieurs constats ont été corrigés depuis) et pistes d'analyse approfondie des dépôts.
+
+---
+
+## Contribuer
+
+Les issues et les pull requests sont les bienvenues. Avant de proposer un changement :
+
+1. lancez `npm run typecheck` et `npm test` (la CI les exécute aussi) ;
+2. ajoutez des tests pour toute logique nouvelle (les modules « purs » comme `src/lib/issues-core.ts` sont faits pour cela) ;
+3. gardez l'esprit du projet : lecture seule, résultats à trois états, jamais de « sain » sans preuve.
+
+Pour signaler une faille de sécurité, n'ouvrez pas d'issue : suivez [SECURITY.md](SECURITY.md). En contribuant, vous acceptez que votre contribution soit distribuée sous la licence du projet.
+
+---
+
+## Licence
+
+OpenKido est distribué sous licence **[GNU Affero General Public License v3.0](LICENSE)** (AGPL-3.0-only) — Copyright © 2026 Burotica.
+
+En pratique : vous pouvez utiliser, étudier, modifier et redistribuer OpenKido librement. Si vous proposez une version **modifiée** à des utilisateurs, y compris sous forme de service en ligne, vous devez leur donner accès au code source de vos modifications, sous la même licence.
+
+Les services tiers interrogés par l'application (GitHub, OSV.dev, deps.dev, Sucuri SiteCheck) restent soumis à leurs propres conditions d'utilisation.
